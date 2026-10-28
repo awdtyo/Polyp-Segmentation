@@ -1,0 +1,16 @@
+# Core stack for dual-encoder polyp segmentation.
+# Colab: torch (and torchvision) are preinstalled - do NOT reinstall them there.
+# Install with: pip install -r requirements.txt
+
+torch>=2.1
+timm>=0.9.12
+albumentations>=1.4
+PyYAML>=6.0
+Pillow>=10.0
+numpy>=1.24
+matplotlib>=3.7
+tqdm>=4.66
+pytest>=7.4
+
+# Optional, disabled by default (logging.wandb: false must work fully offline).
+wandb>=0.16

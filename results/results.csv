@@ -1,0 +1,1 @@
+run_name,commit,config_file,params_m,best_val_dice,test_dice,test_iou,epochs,train_time_min

@@ -1,0 +1,45 @@
+# ---- data: raw images never enter git, splits are committed ----
+data/*
+!data/splits/
+!data/splits/**
+
+# ---- checkpoints, runs, experiment logs ----
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.safetensors
+wandb/
+logs/
+metrics.csv
+
+# ---- notebooks ----
+.ipynb_checkpoints/
+
+# ---- secrets / env ----
+.env
+.env.*
+!.env.example
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- os / editor ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
