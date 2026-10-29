@@ -52,15 +52,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "mask_dir": "masks",
         "split_dir": "data/splits",
         "image_ext": ".jpg",
-        "mask_ext": ".png",
+        "mask_ext": ".jpg",
         "mask_suffix": "",
+        # Optional npz cache built by scripts/build_cache.py. Empty means "read
+        # the image and mask files directly".
+        "cache_path": "",
         "image_size": 256,
+        "split_ratios": [0.8, 0.1, 0.1],
+        "split_seed": 42,
         "mask_threshold": 127,
         "normalize": True,
         "mean": list(IMAGENET_MEAN),
         "std": list(IMAGENET_STD),
         "num_workers": 2,
         "pin_memory": True,
+        # True only for the smoke/test data. Recorded in run_info.json so a run on
+        # synthetic images can never be mistaken for a real result.
+        "synthetic": False,
     },
     "train": {
         "epochs": 100,
@@ -79,8 +87,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "channels_last": False,
     },
     "model": {
-        "encoder_a": "convnext_base",
-        "encoder_b": "caformer_s18",
+        "encoder_a": "convnext_base.fb_in1k",
+        "encoder_b": "caformer_s18.sail_in1k",
         "pretrained_a": True,
         "pretrained_b": True,
         # Fused widths, default to the Meta-Polyp stage widths.
@@ -90,6 +98,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fusion_heads": 8,
         "pos_enc_2d": False,
         "msu": True,
+        # paper: decoder 3 x4 -> decoder 1. released: the repo's F2-level x8 link.
+        "msu_mode": "paper",
+        # Reserved: the paper's Convformer skip block. Not implemented.
+        "skip_convformer": False,
     },
     "logging": {
         "wandb": False,
@@ -200,10 +212,22 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
             problems.append(f"data.{key} must be a non-empty string")
     if not isinstance(data["mask_suffix"], str):
         problems.append("data.mask_suffix must be a string")
+    if not isinstance(data["cache_path"], str):
+        problems.append("data.cache_path must be a string ('' disables the cache)")
     if not isinstance(data["mask_threshold"], int):
         problems.append("data.mask_threshold must be an int")
+    ratios = data["split_ratios"]
+    if not isinstance(ratios, (list, tuple)) or len(ratios) != 3:
+        problems.append("data.split_ratios must be a list of 3 numbers")
+    elif any(float(r) < 0 for r in ratios) or abs(sum(float(r) for r in ratios) - 1.0) > 1e-6:
+        problems.append(f"data.split_ratios must be non-negative and sum to 1.0, got {list(ratios)}")
+    if not isinstance(data["split_seed"], int):
+        problems.append("data.split_seed must be an int")
     if len(data["mean"]) != 3 or len(data["std"]) != 3:
         problems.append("data.mean and data.std must each have 3 values")
+    for key in ("normalize", "pin_memory", "synthetic"):
+        if not isinstance(data[key], bool):
+            problems.append(f"data.{key} must be a bool")
 
     train = cfg["train"]
     if train["loss"] not in LOSS_NAMES:
@@ -225,6 +249,18 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     channels = model["channels"]
     if not isinstance(channels, (list, tuple)) or len(channels) != 4:
         problems.append("model.channels must be a list of 4 ints")
+    elif any(not isinstance(c, int) or c <= 0 for c in channels):
+        problems.append(f"model.channels must be 4 positive ints, got {list(channels)}")
+    for key in ("encoder_a", "encoder_b"):
+        if not isinstance(model[key], str) or not model[key].strip():
+            problems.append(f"model.{key} must be a non-empty timm model name")
+    if model["msu_mode"] not in {"paper", "released"}:
+        problems.append(f"model.msu_mode must be 'paper' or 'released', got {model['msu_mode']!r}")
+    if not isinstance(model["skip_convformer"], bool):
+        problems.append("model.skip_convformer must be a bool")
+    for key in ("pretrained_a", "pretrained_b", "msu", "pos_enc_2d"):
+        if not isinstance(model[key], bool):
+            problems.append(f"model.{key} must be a bool")
 
     if problems:
         raise ConfigError("; ".join(problems))

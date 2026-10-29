@@ -2,8 +2,12 @@
 # experiment and change only what differs; everything else falls back to
 # src/utils.py DEFAULT_CONFIG.
 #
-# NOTE: data.* describes the folder layout only. The concrete dataset (name,
-# image count, 2D vs 3D, mask format) is still TODO - see README "Open questions".
+# Dataset: Kvasir-SEG (see AGENTS.md section 11). `data.root` points at the
+# folder that contains images/ and masks/; on this machine data/raw is a
+# git-ignored symlink to the raw Kvasir-SEG download.
+#
+# Masks are grayscale JPEG, so they are not strictly binary: they are
+# thresholded at data.mask_threshold *before* resizing.
 
 run:
   name: exp000_base
@@ -16,15 +20,20 @@ data:
   mask_dir: masks
   split_dir: data/splits
   image_ext: .jpg
-  mask_ext: .png
+  mask_ext: .jpg
   mask_suffix: ""
+  # Optional .npz cache from scripts/build_cache.py; "" reads the JPEGs directly.
+  cache_path: ""
   image_size: 256        # must be divisible by 32
+  split_ratios: [0.8, 0.1, 0.1]   # train/val/test, case level
+  split_seed: 42
   mask_threshold: 127    # pixel value above which a mask pixel is foreground
   normalize: true        # ImageNet mean/std, shared by both branches
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
   num_workers: 2         # Colab: 2
   pin_memory: true
+  synthetic: false       # true only for smoke/test data; recorded in run_info.json
 
 train:
   epochs: 100
@@ -43,8 +52,8 @@ train:
   channels_last: false
 
 model:
-  encoder_a: convnext_base   # convnext_small / convnext_tiny if T4 memory is tight
-  encoder_b: caformer_s18    # timm equivalent of the Meta-Polyp encoder
+  encoder_a: convnext_base.fb_in1k   # convnext_small.fb_in1k / convnext_tiny.fb_in1k as fallbacks
+  encoder_b: caformer_s18.sail_in1k  # timm equivalent of the Meta-Polyp encoder
   pretrained_a: true
   pretrained_b: true
   channels: [64, 128, 320, 512]              # fused widths = Meta-Polyp stage widths
@@ -52,6 +61,8 @@ model:
   fusion_heads: 8
   pos_enc_2d: false
   msu: true
+  msu_mode: paper        # paper | released (released is reserved for an ablation)
+  skip_convformer: false # reserved; true is not implemented
 
 logging:
   wandb: false

@@ -5,17 +5,18 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestone 1 of 7 complete** (repo skeleton, config loading, dataset,
-Dice/IoU metrics, BCE+Dice and Jaccard losses, tests). No model or training code
-yet.
+Status: **Milestone 1 of 7 complete; dataset preparation done; Milestone 2 in
+progress.** See [PROGRESS.md](PROGRESS.md) for the live checklist.
 
 ## Layout
 
 ```
 AGENTS.md              project specification (read this first)
+PROGRESS.md            milestone checklist, decisions in force, session notes
 configs/base.yaml      default experiment config
 data/splits/           committed split files (train/val/test .txt)
 scripts/make_splits.py  generates the split files once, with a fixed seed
+scripts/build_cache.py  resizes images/masks once into one .npz cache
 src/utils.py           config loading/validation, seeding
 src/datasets.py        PolypDataset, transforms
 src/metrics.py         per-image Dice and IoU
@@ -56,24 +57,50 @@ PY
 
 ## Data contract
 
-Paths only, no dataset assumptions beyond this folder shape:
+The project dataset is **Kvasir-SEG**: 1000 2D RGB colonoscopy images with 1000
+matching masks, used for both training and evaluation. The verified layout is:
 
 ```
-<data.root>/<data.image_dir>/<id><data.image_ext>
-<data.root>/<data.mask_dir>/<id><data.mask_suffix><data.mask_ext>
+<data.root>/images/<id>.jpg
+<data.root>/masks/<id>.jpg
 ```
 
-`<id>` is the file stem written in the split file. `PolypDataset` returns
-`{"image": (3, H, W) float32, "mask": (1, H, W) float32 in {0, 1}, "id": str}`.
-Masks are binarised at `data.mask_threshold` before resizing and resized with
-nearest-neighbour, so they stay exactly 0/1. Images are normalised with ImageNet
-mean/std inside the dataset (`data.normalize`, `data.mean`, `data.std`), so both
-branches share one preprocessing.
+`data.root` defaults to `data/raw`, which on the development machine is a
+git-ignored symlink to the raw download:
 
-> The dataset itself is not chosen yet (TODO in AGENTS.md section 1). The layout
-> above is the PraNet/Kvasir-SEG-style layout, which is what Meta-Polyp used. If
-> your data differs (3D volumes, `CVC`-style naming, masks in `.tif`), say so and
-> `datasets.py` gets adjusted rather than guessed.
+```
+ln -s ../../../dataset/Kvasir-SEG/Kvasir-SEG data/raw
+```
+
+Every image is RGB; every mask is a grayscale JPEG. Masks are **not strictly
+binary** (JPEG compression leaves about 18 grey levels), so they are binarised
+at `data.mask_threshold: 127` *before* resizing and resized with
+nearest-neighbour. `data.mask_ext` is therefore `.jpg` and `data.mask_suffix` is
+empty. `PolypDataset` returns
+`{"image": (3, H, W) float32, "mask": (1, H, W) float32 in {0, 1}, "id": str}`;
+images are normalised with ImageNet mean/std inside the dataset so both branches
+share one preprocessing.
+
+For faster epochs, build the optional cache once:
+
+```
+python scripts/build_cache.py --config configs/base.yaml \
+    --out data/cache/kvasir_seg_256.npz
+```
+
+It resizes every pair to 256x256 and writes one `.npz` (`images` uint8,
+`masks` uint8 0/1). For the current 1000-image Kvasir-SEG copy the file is
+**143.5 MB** and takes about 11 s to build on the CPU box. Set
+`data.cache_path` to that file to use it; an empty string reads the JPEGs
+directly. The cache is an I/O optimisation only: it changes neither the split
+nor the labels, and it is never committed.
+
+> **Leakage caveat.** Kvasir-SEG provides no patient or case identifiers.
+> Splits are therefore image level, so images from the same patient or
+> endoscopy session cannot be guaranteed to stay in one split, and leakage
+> between train/val/test cannot be ruled out. This must be stated in the paper
+> write-up; it is a property of the public dataset, not something the code can
+> fix.
 
 ## Splits
 
@@ -81,26 +108,28 @@ Generated once and committed, so a number is reproducible from
 (config, commit, split file):
 
 ```
-python scripts/make_splits.py --source data/raw/masks --pattern "*.png" \
+python scripts/make_splits.py --source data/raw/images --pattern "*.jpg" \
     --out-dir data/splits --seed 42 --ratios 0.8 0.1 0.1
 ```
 
-With patient/case ids, add `--group-regex "^(?P<group>[^_]+)_"` so all slices of
-a case stay in one split. The test split is only ever read by
-`evaluate.py --split test`.
+The committed split is 800/100/100 (train/val/test) with seed 42, image level
+and with no `--group-regex`; the three lists are disjoint and cover all 1000
+ids. The upstream 880/120 `train.txt`/`val.txt` files shipped with the download
+are not used. The test split is only ever read by `evaluate.py --split test`.
 
 ## Tests
 
 ```
-python -m pytest          # ~1.5 s on CPU
+python -m pytest
 ```
 
 Covers: config merge/validation, dataset loading on a synthetic folder in a temp
-dir (no real data), Dice/IoU against hand-computed values, loss behaviour and
-differentiability, and split generation (counts, determinism, case-level
-disjointness). The albumentations augmentation test is skipped when
-albumentations is not installed; everything else runs with torch + Pillow + YAML
-only.
+dir (no real data), npz cache building and raw-vs-cache equivalence, Dice/IoU
+against hand-computed values, loss behaviour and differentiability, split
+generation (counts, determinism, group disjointness), and the committed
+Kvasir-SEG split (800/100/100, disjoint). The albumentations augmentation test is
+skipped when albumentations is not installed; everything else runs with torch +
+Pillow + YAML only.
 
 ## Reproducibility rules
 
@@ -122,5 +151,6 @@ it shares the channel widths.
 
 ## Roadmap
 
-Milestone 2 (ConvNeXt baseline + decoder + `train.py` with resume) starts only
-after approval. See AGENTS.md section 9.
+See [PROGRESS.md](PROGRESS.md). Milestone 2 (ConvNeXt baseline + plain decoder +
+`train.py` with resume) is in progress; later milestones add the Meta-Polyp
+encoder, fusion, MSU, evaluation and the Colab launcher (AGENTS.md section 9).

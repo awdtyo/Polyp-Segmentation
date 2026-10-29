@@ -199,6 +199,9 @@ def test_from_config_builds_the_split(synthetic_dataset: dict) -> None:
                 "root": str(synthetic_dataset["root"]),
                 "split_dir": str(synthetic_dataset["split_dir"]),
                 "image_size": SIZE,
+                # The synthetic fixture stores PNG masks; Kvasir-SEG (base.yaml)
+                # uses JPEG masks.
+                "mask_ext": ".png",
             }
         },
     )
@@ -210,7 +213,7 @@ def test_from_config_builds_the_split(synthetic_dataset: dict) -> None:
 
 
 def test_train_transform_helper_is_optional() -> None:
-    """The augmentation pipeline needs albumentations; tests skip cleanly without it."""
+    """The augmentation pipeline needs albumentations; the dataset resizes after it."""
     pytest.importorskip("albumentations")
     from src.datasets import build_train_transform
 
@@ -220,5 +223,19 @@ def test_train_transform_helper_is_optional() -> None:
     mask[10:20, 10:20] = 1.0
     out = transform(image=image, mask=mask)
 
-    assert out["image"].shape == (SIZE, SIZE, 3)
-    assert out["mask"].shape == (SIZE, SIZE)
+    # A transform may change the size; image and mask must stay aligned, and the
+    # dataset is what guarantees the final (3, image_size, image_size) shape.
+    assert out["image"].ndim == 3 and out["image"].shape[2] == 3
+    assert out["mask"].shape == out["image"].shape[:2]
+
+
+def test_dataset_resizes_after_transform(synthetic_dataset: dict) -> None:
+    pytest.importorskip("albumentations")
+    from src.datasets import build_train_transform
+
+    transform = build_train_transform(SIZE, seed=0)
+    sample = make_dataset(synthetic_dataset, transform=transform, image_size=SIZE)[0]
+
+    assert sample["image"].shape == (3, SIZE, SIZE)
+    assert sample["mask"].shape == (1, SIZE, SIZE)
+    assert set(torch.unique(sample["mask"]).tolist()) <= {0.0, 1.0}

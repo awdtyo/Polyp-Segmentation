@@ -170,3 +170,20 @@ def test_cli_is_reproducible(tmp_path: Path) -> None:
 
     for name in ("train", "val", "test"):
         assert (out_a / f"{name}.txt").read_text() == (out_b / f"{name}.txt").read_text()
+
+
+def test_committed_kvasir_splits_are_exact_and_disjoint() -> None:
+    """The committed Kvasir-SEG split files are 800/100/100, seed 42, disjoint."""
+    repo_root = Path(__file__).resolve().parents[1]
+    splits = {
+        name: read_split(repo_root / "data" / "splits" / f"{name}.txt")
+        for name in ("train", "val", "test")
+    }
+
+    assert {name: len(ids) for name, ids in splits.items()} == {"train": 800, "val": 100, "test": 100}
+    all_ids = splits["train"] + splits["val"] + splits["test"]
+    assert len(set(all_ids)) == 1000
+    assert set(splits["train"]).isdisjoint(splits["val"])
+    assert set(splits["train"]).isdisjoint(splits["test"])
+    assert set(splits["val"]).isdisjoint(splits["test"])
+

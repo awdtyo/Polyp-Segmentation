@@ -33,6 +33,56 @@ from src.utils import IMAGENET_MEAN, IMAGENET_STD
 Transform = Callable[..., dict[str, np.ndarray]]
 
 
+def load_cache(cache_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    """Load a pre-resized ``.npz`` cache built by ``scripts/build_cache.py``.
+
+    Args:
+        cache_path: Path to the cache file.
+
+    Returns:
+        ``(images, masks, id_to_index)``: images ``(N, S, S, 3)`` uint8, masks
+        ``(N, S, S)`` uint8 in {0, 1}, and the row for each sample id.
+
+    Raises:
+        FileNotFoundError: if the cache file does not exist.
+        ValueError: if the cache is missing arrays or has an unexpected shape/dtype.
+
+    Notes:
+        The whole array pair is loaded into memory once per worker (about 262 MB
+        for 1000 images at 256x256); workers forked on Linux share the pages.
+    """
+    path = Path(cache_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Cache not found: {path}. Build it with scripts/build_cache.py "
+            "or set data.cache_path to an empty string."
+        )
+    with np.load(path) as data:
+        missing = {"ids", "images", "masks"} - set(data.files)
+        if missing:
+            raise ValueError(f"Cache {path} is missing arrays: {sorted(missing)}")
+        ids = [str(value) for value in data["ids"]]
+        images = data["images"]
+        masks = data["masks"]
+
+    if images.ndim != 4 or images.shape[-1] != 3:
+        raise ValueError(f"Cache images must be (N, S, S, 3), got {images.shape}: {path}")
+    if masks.ndim != 3:
+        raise ValueError(f"Cache masks must be (N, S, S), got {masks.shape}: {path}")
+    if len(ids) != images.shape[0] or len(ids) != masks.shape[0]:
+        raise ValueError(f"Cache ids ({len(ids)}) do not match image/mask counts: {path}")
+    if images.dtype != np.uint8:
+        raise ValueError(f"Cache images must be uint8, got {images.dtype}: {path}")
+    if masks.dtype != np.uint8:
+        raise ValueError(f"Cache masks must be uint8, got {masks.dtype}: {path}")
+    if masks.size and int(masks.max()) > 1:
+        raise ValueError(f"Cache masks must be 0/1, found max {int(masks.max())}: {path}")
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"Cache ids must be unique: {path}")
+
+    return images, masks, {sample_id: index for index, sample_id in enumerate(ids)}
+
+
 def read_split(split_file: str | Path) -> list[str]:
     """Read a split file into a list of sample ids.
 
@@ -75,6 +125,9 @@ class PolypDataset(Dataset):
         mask_ext: Mask file extension, e.g. ``".png"``.
         mask_suffix: Appended to the id for mask lookup, e.g. ``"_mask"``.
         mask_threshold: Pixel value above which a mask pixel is foreground.
+        cache_path: Optional ``.npz`` cache from ``scripts/build_cache.py``. When
+            set, images and masks are read from it instead of from disk; every id
+            in the split must be present.
         normalize: If True, normalise with ``mean``/``std``; else scale to [0, 1].
         mean: Per-channel mean, length 3.
         std: Per-channel std, length 3.
@@ -96,6 +149,7 @@ class PolypDataset(Dataset):
         mask_ext: str = ".png",
         mask_suffix: str = "",
         mask_threshold: int = 127,
+        cache_path: str | Path | None = None,
         normalize: bool = True,
         mean: Sequence[float] = IMAGENET_MEAN,
         std: Sequence[float] = IMAGENET_STD,
@@ -110,6 +164,7 @@ class PolypDataset(Dataset):
         self.mask_ext = mask_ext
         self.mask_suffix = mask_suffix
         self.mask_threshold = int(mask_threshold)
+        self.cache_path = Path(cache_path) if cache_path else None
         self.normalize = normalize
         self.mean = np.asarray(mean, dtype=np.float32).reshape(3, 1, 1)
         self.std = np.asarray(std, dtype=np.float32).reshape(3, 1, 1)
@@ -120,6 +175,19 @@ class PolypDataset(Dataset):
             raise ValueError("mean and std must each have 3 values")
 
         self.ids: list[str] = read_split(self.split_file)
+
+        self._cache_images: np.ndarray | None = None
+        self._cache_masks: np.ndarray | None = None
+        self._cache_index: dict[str, int] = {}
+        if self.cache_path is not None:
+            self._cache_images, self._cache_masks, self._cache_index = load_cache(self.cache_path)
+            missing = [sample_id for sample_id in self.ids if sample_id not in self._cache_index]
+            if missing:
+                preview = ", ".join(missing[:5])
+                raise ValueError(
+                    f"{len(missing)} split ids are missing from cache {self.cache_path} "
+                    f"(first: {preview}). Rebuild the cache from the same split."
+                )
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any], split: str, transform: Transform | None = None) -> "PolypDataset":
@@ -146,6 +214,7 @@ class PolypDataset(Dataset):
             mask_ext=data["mask_ext"],
             mask_suffix=data["mask_suffix"],
             mask_threshold=data["mask_threshold"],
+            cache_path=data.get("cache_path") or None,
             normalize=data["normalize"],
             mean=data["mean"],
             std=data["std"],
@@ -164,11 +233,15 @@ class PolypDataset(Dataset):
             ``{"image": (3, H, W) float32, "mask": (1, H, W) float32, "id": str}``
         """
         sample_id = self.ids[index]
-        image_path = self.root / self.image_dir / f"{sample_id}{self.image_ext}"
-        mask_path = self.root / self.mask_dir / f"{sample_id}{self.mask_suffix}{self.mask_ext}"
-
-        image = self._load_image(image_path)  # (h, w, 3) uint8
-        mask = self._load_mask(mask_path)  # (h, w) float32 in {0, 1}
+        if self._cache_images is not None and self._cache_masks is not None:
+            row = self._cache_index[sample_id]
+            image = self._cache_images[row]  # (S, S, 3) uint8
+            mask = self._cache_masks[row].astype(np.float32)  # (S, S) in {0, 1}
+        else:
+            image_path = self.root / self.image_dir / f"{sample_id}{self.image_ext}"
+            mask_path = self.root / self.mask_dir / f"{sample_id}{self.mask_suffix}{self.mask_ext}"
+            image = self._load_image(image_path)  # (h, w, 3) uint8
+            mask = self._load_mask(mask_path)  # (h, w) float32 in {0, 1}
 
         if self.transform is not None:
             augmented = self.transform(image=image, mask=mask)
