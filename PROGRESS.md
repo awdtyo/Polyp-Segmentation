@@ -45,6 +45,12 @@ version:
 - albumentations for training augmentation only; `metrics.csv` always written;
   W&B optional and off by default.
 - Final results: 3 seeds (42/43/44), report mean and std.
+- First T4 probe: `exp001`, batch 8, then 4 and 2 with gradient accumulation
+  if memory runs out. No VRAM number is claimed until measured.
+- Pretrained timm downloads are Colab-only; tests and smoke runs stay
+  `pretrained: false`.
+- The upstream 880/120 split comparison is deferred, not cancelled.
+- Milestone 4 (fusion) is approved. Milestones 5-7 are still pending.
 
 ## Last session (2026-10-29)
 
@@ -187,15 +193,14 @@ result. No VRAM number is claimed until it is measured.
 
 ### Open questions (current)
 
-- Does ConvNeXt-Base at 256x256 fit the free T4? The 5-epoch probe (preferably
-  with `BATCH_SIZE=2` or 4) must measure peak VRAM and epoch time; reduce batch
-  size and raise gradient accumulation before considering `exp002`.
+- Does ConvNeXt-Base at 256x256 fit the free T4? The first probe uses
+  `exp001` with batch size 8, then 4, then 2 with gradient accumulation; it
+  must measure peak VRAM and epoch time. Nothing is claimed until measured.
 - Before the first real Branch B run, confirm that downloading the pinned
-  `caformer_s18.sail_in1k` ImageNet weights is allowed. Nothing has been
-  downloaded yet.
-- Should the first T4 probe use `exp001` (ConvNeXt) or `exp003` (CAFormer)?
-  The launcher currently defaults to `exp001`.
+  `caformer_s18.sail_in1k` ImageNet weights is allowed. Downloads are now
+  approved on Colab only; nothing has been downloaded locally.
 - The upstream 880/120 split comparison remains optional and separate from the
-  committed 800/100/100 development split.
-- Milestones 4-7 remain blocked on explicit approval.
+  committed 800/100/100 development split. It is deferred, not cancelled.
+- Milestone 4 (fusion) is approved. Milestones 5-7 remain pending explicit
+  approval.
 

@@ -226,3 +226,19 @@ what was decided and what it replaced.
   links (`msu_mode: paper | released`; Milestone 5), `evaluate.py` plus ablation
   configs, `results.csv` appending and multi-seed runs (Milestone 6), and the
   final README (Milestone 7) must not start without the user's approval.
+- **2026-10-29 - First T4 probe.** The first memory/time probe uses `exp001`
+  (ConvNeXt-Base) with `train.batch_size: 8`. If the T4 runs out of memory,
+  fall back to batch size 4 and then 2, raising `train.grad_accum_steps` to keep
+  the effective batch size. Do not switch to `exp002` before those fallbacks
+  are measured. No VRAM number is claimed until this probe is run.
+- **2026-10-29 - Pretrained downloads are Colab-only.** Downloading the pinned
+  timm ImageNet weights is allowed on Colab only. Local tests and smoke runs
+  always use `pretrained: false`; nothing is downloaded on the CPU dev box.
+- **2026-10-29 - Upstream 880/120 comparison is deferred.** The comparison
+  against the official upstream `train.txt`/`val.txt` lists is deferred, not
+  cancelled. Development and ablations continue on the committed 800/100/100
+  split (seed 42).
+- **2026-10-29 - Milestone 4 approved; 5-7 pending.** Dual-encoder fusion is
+  approved and is the only new architecture work in this session. MSU
+  (Milestone 5), `evaluate.py`/ablation configs (Milestone 6) and the final
+  README (Milestone 7) remain pending explicit approval.
