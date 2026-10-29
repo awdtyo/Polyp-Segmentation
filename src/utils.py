@@ -87,6 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "channels_last": False,
     },
     "model": {
+        "encoder": "convnext",
         "encoder_a": "convnext_base.fb_in1k",
         "encoder_b": "caformer_s18.sail_in1k",
         "pretrained_a": True,
@@ -234,6 +235,10 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         problems.append(f"train.loss must be one of {sorted(LOSS_NAMES)}, got {train['loss']!r}")
 
     model = cfg["model"]
+    if model["encoder"] not in {"convnext", "caformer"}:
+        problems.append(
+            f"model.encoder must be 'convnext' or 'caformer', got {model['encoder']!r}"
+        )
     fusion = model["fusion"]
     if isinstance(fusion, str):
         if fusion not in FUSION_MODES:

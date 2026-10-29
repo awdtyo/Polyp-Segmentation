@@ -5,10 +5,11 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestones 1-2 of 7 complete** (skeleton and dataset preparation;
-ConvNeXt-Base baseline with a plain decoder, training loop and resume). The thin
-Colab launcher is available now; fusion, MSU, evaluation and the final README
-remain. See [PROGRESS.md](PROGRESS.md) for the live checklist.
+Status: **Milestones 1-3 of 7 complete** (skeleton and dataset preparation;
+ConvNeXt-Base baseline with a plain decoder, training loop and resume; Meta-Polyp
+CAFormer-S18 branch with the same decoder). The thin Colab launcher is available
+now; fusion, MSU, evaluation and the final README remain. See
+[PROGRESS.md](PROGRESS.md) for the live checklist.
 
 ## Layout
 
@@ -24,9 +25,13 @@ src/datasets.py        PolypDataset, transforms
 src/metrics.py         per-image Dice and IoU
 src/losses.py          BCE+Dice, Dice, Jaccard, BCE
 src/models/            encoders, fusion, decoder, MSU, net (milestones 2-5)
+  convnext_enc.py      Branch A: ConvNeXt via timm
+  metapolyp_enc.py     Branch B: CAFormer-S18 (Meta-Polyp encoder) via timm
+  decoder.py           channel alignment + plain U-Net decoder
+  net.py               assembled single-branch model, parameter groups
 src/train.py           training entry point (milestone 2)
 src/evaluate.py        evaluation entry point (milestone 6)
-tests/                 CPU tests, a few seconds
+tests/                 CPU tests, under a minute
 results/results.csv    one row per evaluated run
 notebooks/             thin Colab launcher (`colab_run.ipynb`)
 ```
@@ -56,6 +61,10 @@ PY
 ```
 
 `data.image_size` must be divisible by 32 (the encoders downsample by 32).
+`model.encoder: convnext | caformer` selects the single active branch; the
+Branch B baselines also set `model.fusion: [single_b, single_b, single_b,
+single_b]` and `model.msu: false`. Dual-branch fusion and MSU are not
+implemented yet.
 
 ## Data contract
 
@@ -129,9 +138,13 @@ Covers: config merge/validation, dataset loading on a synthetic folder in a temp
 dir (no real data), npz cache building and raw-vs-cache equivalence, Dice/IoU
 against hand-computed values, loss behaviour and differentiability, split
 generation (counts, determinism, group disjointness), and the committed
-Kvasir-SEG split (800/100/100, disjoint). The albumentations augmentation test is
-skipped when albumentations is not installed; everything else runs with torch +
-Pillow + YAML only.
+Kvasir-SEG split (800/100/100, disjoint). Model tests cover both encoders
+(4 maps, strides 4/8/16/32, expected widths), every implemented fusion mode,
+the Branch A and Branch B overfit-one-batch checks, and an end-to-end `--smoke`
+run for each branch. No test downloads pretrained weights: every test passes
+`pretrained=False`. The albumentations augmentation test is skipped when
+albumentations is not installed; everything else runs with torch + Pillow + YAML
+only.
 
 ## Running on Colab
 
@@ -164,9 +177,9 @@ count: the cosine schedule would change. Use a separate `RUNS_DIR` for the probe
 
 ### Recommended first three runs
 
-1. **GPU pipeline check:** leave `SMOKE=True`. This uses synthetic data, a tiny
-   encoder, 64 px and 3 optimiser steps. It proves the GPU path and notebook
-   wiring; its Dice is meaningless.
+1. **GPU pipeline check:** leave `SMOKE=True`. This uses synthetic data, 64 px
+   and 3 optimiser steps (with `exp001`, a tiny ConvNeXt encoder). It proves the
+   GPU path and notebook wiring; its Dice is meaningless.
 2. **Five-epoch probe:** set `SMOKE=False`, `CONFIG` to
    `configs/exp001_convnext_base_baseline.yaml`, `EPOCHS=5`, `BATCH_SIZE=2` (or 4)
    and a probe `RUNS_DIR`. This is a memory/time probe, not a reported result.
@@ -197,9 +210,23 @@ That is exactly timm's `caformer_s18`, which is what `model.encoder_b` points at
 `caformer_s36` is **not** the same model (depths `[3, 12, 18, 3]`), even though
 it shares the channel widths.
 
+With timm 1.0.30, `caformer_s18.sail_in1k` supports
+`features_only=True, out_indices=(0, 1, 2, 3)` directly; the wrapper reports
+channels `[64, 128, 320, 512]` at reductions `[4, 8, 16, 32]`. No forward hooks
+or `forward_intermediates` fallback are used. The pretrained configs of
+`convnext_base.fb_in1k` and `caformer_s18.sail_in1k` both use ImageNet
+mean `(0.485, 0.456, 0.406)` and std `(0.229, 0.224, 0.225)`, so the shared
+preprocessing in `data.mean` / `data.std` is correct.
+
+Parameter counts with random weights (no download): the ConvNeXt-Base baseline
+is **97.22 M** (87.56 M encoder + 9.66 M head); the CAFormer-S18 branch is
+**32.55 M** (23.24 M encoder + 9.31 M head). A real `exp003` run downloads the
+pinned `sail_in1k` weights through timm; `exp004` is the from-scratch extra
+baseline.
+
 ## Roadmap
 
-Milestones 1-2 are complete. Milestone 3 (Meta-Polyp encoder with the same
-decoder) is next; later milestones add fusion, MSU and evaluation. The thin
-Colab launcher (`notebooks/colab_run.ipynb`) and its README section are already
-in place. See [PROGRESS.md](PROGRESS.md).
+Milestones 1-3 are complete. Milestone 4 (concat fusion at stages 1-2 and
+cross-attention at stages 3-4) is next; later milestones add MSU and evaluation.
+The thin Colab launcher (`notebooks/colab_run.ipynb`) and its README section are
+already in place. See [PROGRESS.md](PROGRESS.md).

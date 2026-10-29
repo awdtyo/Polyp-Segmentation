@@ -5,10 +5,12 @@ Usage:
     python -m src.train --config configs/exp001_convnext_base_baseline.yaml --smoke
 
 Resume is automatic: if ``<out_dir>/<run_name>/last.pt`` exists the run continues
-from it. ``--no-resume`` starts fresh. ``--smoke`` shrinks everything (tiny
-encoder, 64 px, 2 images per batch, 3 optimiser steps, synthetic data in the run
-folder, no pretrained download) to prove the pipeline runs end to end on CPU.
-Smoke numbers are not results and are never comparable to a real run.
+from it. ``--no-resume`` starts fresh. ``--smoke`` shrinks everything (64 px,
+2 images per batch, 3 optimiser steps, synthetic data in the run folder, no
+pretrained download) to prove the pipeline runs end to end on CPU. The active
+branch is still the one named by the config (ConvNeXt-tiny for Branch A,
+caformer_s18 for Branch B). Smoke numbers are not results and are never
+comparable to a real run.
 
 Never run full training on the CPU dev box: only ``--smoke`` is allowed there.
 """
@@ -86,8 +88,9 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
         cfg: Resolved config.
 
     Returns:
-        A modified deep copy: 1 epoch, 64 px, batch 2, 3 steps, tiny ConvNeXt,
-        no pretrained download, no W&B, no workers, Milestone-2 baseline path.
+        A modified deep copy: 1 epoch, 64 px, batch 2, 3 steps, no pretrained
+        download, no W&B, no workers, and the config's active branch only
+        (ConvNeXt-tiny for Branch A, caformer_s18 for Branch B).
     """
     smoke = copy.deepcopy(dict(cfg))
     smoke["run"]["name"] = f"{smoke['run']['name']}_smoke"
@@ -95,12 +98,16 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
     smoke["data"].update(
         {"image_size": 64, "num_workers": 0, "pin_memory": False, "cache_path": ""}
     )
+    encoder_kind = str(smoke["model"].get("encoder", "convnext"))
+    branch_mode = "single_b" if encoder_kind == "caformer" else "single_a"
+    # encoder_a is unused in the Branch B smoke test, but keeping a tiny name makes
+    # the smoke config harmless if someone inspects it. Branch B keeps caformer_s18
+    # so the real Meta-Polyp path is the one under test.
+    smoke["model"].update({"encoder_a": "convnext_tiny.fb_in1k", "pretrained_a": False})
     smoke["model"].update(
         {
-            "encoder_a": "convnext_tiny.fb_in1k",
-            "pretrained_a": False,
             "pretrained_b": False,
-            "fusion": ["single_a"] * 4,
+            "fusion": [branch_mode] * 4,
             "msu": False,
             "skip_convformer": False,
         }
@@ -783,8 +790,9 @@ def write_run_info(
             "source": "ImageNet (documented default, shared by both branches)",
         },
         "model": {
-            "encoder_a": cfg["model"]["encoder_a"],
-            "encoder_b": None,
+            "encoder": cfg["model"]["encoder"],
+            "encoder_a": cfg["model"]["encoder_a"] if cfg["model"]["encoder"] == "convnext" else None,
+            "encoder_b": cfg["model"]["encoder_b"] if cfg["model"]["encoder"] == "caformer" else None,
             "pretrained_a": bool(cfg["model"]["pretrained_a"]),
             "pretrained_b": bool(cfg["model"]["pretrained_b"]),
             "fusion": (
@@ -950,7 +958,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if args.smoke:
         cfg = apply_smoke_overrides(cfg)
-        print("SMOKE MODE: tiny encoder, 64 px, synthetic data, 3 steps. Numbers are not results.")
+        print("SMOKE MODE: 64 px, synthetic data, 3 steps, no pretrained weights. Numbers are not results.")
 
     set_seed(int(cfg["run"]["seed"]))
     run_dir = Path(cfg["run"]["out_dir"]) / cfg["run"]["name"]
@@ -969,7 +977,14 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     model = build_model(cfg).to(device)
     total, trainable = count_parameters(model)
-    print(f"model: {cfg['model']['encoder_a']}  params: {total/1e6:.2f}M ({trainable/1e6:.2f}M trainable)")
+    active_encoder = str(cfg["model"]["encoder"])
+    encoder_name = (
+        cfg["model"]["encoder_b"] if active_encoder == "caformer" else cfg["model"]["encoder_a"]
+    )
+    print(
+        f"model: {active_encoder} ({encoder_name})  "
+        f"params: {total/1e6:.2f}M ({trainable/1e6:.2f}M trainable)"
+    )
 
     train_loader, val_loader = build_dataloaders(cfg, synthetic_root=synthetic_root)
     print(f"data: {len(train_loader.dataset)} train / {len(val_loader.dataset)} val")  # type: ignore[arg-type]

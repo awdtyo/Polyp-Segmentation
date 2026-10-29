@@ -1,0 +1,65 @@
+# exp004 - Extra Milestone 3 baseline: Meta-Polyp encoder trained from scratch.
+# This is not the default Branch B run. No ImageNet weights are loaded, and the
+# Branch B learning rate is the from-scratch value from AGENTS.md section 4.
+# Results must be labelled "from scratch" and are not comparable to exp003
+# without saying so.
+
+run:
+  name: exp004_caformer_s18_scratch
+  seed: 42
+  out_dir: runs
+
+data:
+  root: data/raw
+  image_dir: images
+  mask_dir: masks
+  split_dir: data/splits
+  image_ext: .jpg
+  mask_ext: .jpg          # Kvasir-SEG masks are grayscale JPEG, not strictly binary
+  mask_suffix: ""
+  cache_path: data/cache/kvasir_seg_256.npz   # built by scripts/build_cache.py; "" reads JPEGs
+  image_size: 256
+  split_ratios: [0.8, 0.1, 0.1]
+  split_seed: 42
+  mask_threshold: 127
+  normalize: true
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  num_workers: 2
+  pin_memory: true
+
+train:
+  epochs: 100
+  batch_size: 8
+  loss: bce_dice
+  bce_weight: 1.0
+  dice_weight: 1.0
+  lr_convnext: 3.0e-5     # unused: Branch A is not built here
+  lr_encoder_b: 3.0e-4    # from scratch (AGENTS.md section 4)
+  lr_head: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 0
+  grad_accum_steps: 1
+  grad_clip_norm: 0.0
+  amp: true
+  channels_last: false
+
+model:
+  encoder: caformer
+  encoder_a: convnext_base.fb_in1k   # unused; Branch A is not built
+  encoder_b: caformer_s18.sail_in1k
+  pretrained_a: false     # unused; Branch A is not built
+  pretrained_b: false     # from scratch
+  channels: [64, 128, 320, 512]
+  fusion: [single_b, single_b, single_b, single_b]
+  fusion_heads: 8
+  pos_enc_2d: false
+  msu: false
+  msu_mode: paper
+  skip_convformer: false
+
+logging:
+  wandb: false
+  wandb_project: polyp-dual-encoder
+  log_images_every: 5
+  num_log_images: 4

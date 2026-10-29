@@ -52,6 +52,7 @@ train:
   channels_last: false
 
 model:
+  encoder: convnext                       # convnext | caformer (one branch per baseline)
   encoder_a: convnext_base.fb_in1k   # convnext_small.fb_in1k / convnext_tiny.fb_in1k as fallbacks
   encoder_b: caformer_s18.sail_in1k  # timm equivalent of the Meta-Polyp encoder
   pretrained_a: true

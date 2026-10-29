@@ -9,5 +9,7 @@ Filled in milestone order (AGENTS.md section 9):
   (milestone 5).
 * ``net.py`` - the assembled model (milestone 2 onwards).
 
-Nothing is implemented yet: Milestone 1 is data, metrics and losses only.
+Milestones 1-3 are implemented: both single-branch encoders, channel alignment,
+the plain decoder and the assembled baseline. Fusion (milestone 4) and MSU
+(milestone 5) are not implemented yet.
 """

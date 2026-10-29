@@ -41,6 +41,7 @@ from src.utils import load_config, save_config, set_seed
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG = REPO_ROOT / "configs" / "base.yaml"
 BASELINE_CONFIG = REPO_ROOT / "configs" / "exp001_convnext_base_baseline.yaml"
+CAFORMER_CONFIG = REPO_ROOT / "configs" / "exp003_caformer_s18_baseline.yaml"
 
 
 def tiny_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -136,6 +137,18 @@ def test_optimizer_covers_every_parameter_once() -> None:
     seen = [id(param) for group in optimizer.param_groups for param in group["params"]]
     assert len(seen) == len(set(seen))
     assert set(seen) == {id(param) for param in model.parameters()}
+
+
+def test_branch_b_optimizer_uses_the_encoder_b_learning_rate() -> None:
+    cfg = load_config(CAFORMER_CONFIG, overrides={"model": {"pretrained_b": False}})
+    model = build_model(cfg)
+    optimizer = build_optimizer(model, cfg)
+
+    rates = {group["name"]: group["lr"] for group in optimizer.param_groups}
+    assert rates["encoder_b"] == pytest.approx(cfg["train"]["lr_encoder_b"])
+    assert "encoder_a" not in rates
+    assert rates["head"] == pytest.approx(cfg["train"]["lr_head"])
+    assert get_learning_rates(optimizer)["encoder_a"] == 0.0
 
 
 def test_scheduler_warms_up_then_anneals_to_zero() -> None:
@@ -365,12 +378,39 @@ def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, c
     assert info["synth_data"] is True
     assert info["model"]["fusion"] == ["single_a"] * 4
     assert info["model"]["msu"] is False
+    assert info["model"]["encoder"] == "convnext"
     assert info["peak_gpu_mem_mb"] == 0.0
     assert info["epochs_this_session"] == 1
     assert info["mean_epoch_time_s"] is not None and info["mean_epoch_time_s"] > 0
     assert info["data_format"]["cache_sha256"] is None
     assert (run_dir / "preds" / "epoch_0000.png").is_file()
     assert "SMOKE MODE" in capsys.readouterr().out
+
+
+def test_caformer_smoke_run_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Branch B smoke run exercises the Meta-Polyp encoder without downloads."""
+    monkeypatch.chdir(tmp_path)
+    out_root = tmp_path / "runs"
+
+    exit_code = train_mod.main(
+        ["--config", str(CAFORMER_CONFIG), "--smoke", "--out-dir", str(out_root)]
+    )
+
+    assert exit_code == 0
+    run_dir = out_root / "exp003_caformer_s18_baseline_smoke"
+    for name in ("config_resolved.yaml", "run_info.json", "metrics.csv", "last.pt", "best.pt"):
+        assert (run_dir / name).is_file(), f"missing {name}"
+
+    info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
+    assert info["model"]["encoder"] == "caformer"
+    assert info["model"]["encoder_a"] is None
+    assert info["model"]["encoder_b"] == "caformer_s18.sail_in1k"
+    assert info["model"]["pretrained_b"] is False
+    assert info["model"]["fusion"] == ["single_b"] * 4
+    assert info["model"]["msu"] is False
+    assert "caformer" in capsys.readouterr().out
 
 
 def test_real_run_resumes_from_last_checkpoint(

@@ -1,10 +1,12 @@
-"""Tests for the Milestone-2 model: ConvNeXt encoder, plain decoder, assembled net.
+"""Tests for the Milestone-3 models: ConvNeXt and Meta-Polyp encoders, plain
+decoder, assembled single-branch net.
 
 Everything here runs on CPU with randomly initialised weights: ``pretrained`` is
 always False, so no weights are downloaded. Shape tests use ``convnext_tiny``
 because it has the same four-stage / stride-4-8-16-32 layout as the default
 ``convnext_base`` at a fraction of the cost; the default's channel layout is
-asserted separately without a forward pass.
+asserted separately without a forward pass. ``caformer_s18`` has no tiny variant,
+so its real shape is tested once at 256 px.
 """
 
 from __future__ import annotations
@@ -18,10 +20,12 @@ import torch
 from src.losses import build_loss
 from src.models.convnext_enc import ConvNeXtEncoder
 from src.models.decoder import ChannelAlignment, PlainDecoder
+from src.models.metapolyp_enc import META_POLYP_CHANNELS, MetaPolypEncoder
 from src.models.net import PolypSegNet, build_model, count_parameters
 from src.utils import load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CAFORMER_BASELINE = REPO_ROOT / "configs" / "exp003_caformer_s18_baseline.yaml"
 
 #: The four strides every encoder must produce (AGENTS.md section 3.1).
 EXPECTED_STRIDES = (4, 8, 16, 32)
@@ -49,6 +53,20 @@ def baseline_config(model_overrides: Mapping[str, Any] | None = None) -> dict[st
     return load_config(REPO_ROOT / "configs" / "base.yaml", overrides={"model": model})
 
 
+def caformer_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Build a Milestone-3 Branch B config with random weights (no download).
+
+    Args:
+        model_overrides: Optional ``model.*`` values to change.
+
+    Returns:
+        Resolved config with caformer_s18, ``single_b`` fusion and no MSU.
+    """
+    model: dict[str, Any] = {"pretrained_b": False, "pretrained_a": False}
+    model.update(dict(model_overrides or {}))
+    return load_config(CAFORMER_BASELINE, overrides={"model": model})
+
+
 def test_convnext_encoder_returns_four_stage_maps() -> None:
     encoder = ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False)
     maps = encoder(torch.randn(2, 3, 256, 256))
@@ -66,6 +84,26 @@ def test_convnext_base_has_the_documented_channel_layout() -> None:
     assert tuple(encoder.strides) == EXPECTED_STRIDES
     total, _ = count_parameters(encoder)
     assert 80_000_000 < total < 95_000_000, f"convnext_base should be ~88M params, got {total}"
+
+
+def test_metapolyp_encoder_returns_four_stage_maps() -> None:
+    encoder = MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False)
+    maps = encoder(torch.randn(2, 3, 256, 256))
+
+    assert len(maps) == 4
+    assert tuple(encoder.out_channels) == META_POLYP_CHANNELS
+    assert tuple(encoder.strides) == EXPECTED_STRIDES
+    for feature, channels, stride in zip(maps, encoder.out_channels, EXPECTED_STRIDES):
+        assert feature.shape == (2, channels, 256 // stride, 256 // stride)
+    total, _ = count_parameters(encoder)
+    assert 22_000_000 < total < 25_000_000, f"caformer_s18 should be ~23M params, got {total}"
+
+
+def test_metapolyp_encoder_rejects_input_not_divisible_by_32() -> None:
+    encoder = MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False)
+
+    with pytest.raises(ValueError, match="divisible by 32"):
+        encoder(torch.randn(1, 3, 100, 100))
 
 
 def test_encoder_rejects_input_not_divisible_by_32() -> None:
@@ -114,6 +152,16 @@ def test_net_forward_shape(size: int) -> None:
     assert logits.shape == (1, 1, size, size)
 
 
+def test_caformer_net_forward_shape_at_256() -> None:
+    model = build_model(caformer_config()).eval()
+
+    with torch.no_grad():
+        logits = model(torch.randn(2, 3, 256, 256))
+
+    assert logits.shape == (2, 1, 256, 256)
+    assert torch.isfinite(logits).all()
+
+
 def test_net_returns_logits_not_probabilities() -> None:
     model = build_model(baseline_config()).eval()
     # A zero-weight head with a +10 bias must emit exactly 10.0: if a sigmoid were
@@ -148,6 +196,24 @@ def test_head_group_holds_alignment_and_decoder_only() -> None:
     assert not head & {id(param) for param in model.encoder_a.parameters()}
 
 
+def test_branch_b_parameter_groups_use_encoder_b_and_align_b() -> None:
+    model = build_model(caformer_config())
+    groups = model.parameter_groups()
+
+    assert model.encoder_a is None
+    assert model.align_a is None
+    assert groups["encoder_a"] == []
+    assert groups["encoder_b"]
+    assert groups["head"]
+    head = {id(param) for param in groups["head"]}
+    align = {id(param) for param in model.align_b.parameters()}
+    decoder = {id(param) for param in model.decoder.parameters()}
+    assert head == align | decoder
+    seen = [id(param) for params in groups.values() for param in params]
+    assert len(seen) == len(set(seen))
+    assert set(seen) == {id(param) for param in model.parameters()}
+
+
 def test_count_parameters_is_positive_and_trainable_matches() -> None:
     model = build_model(baseline_config())
     total, trainable = count_parameters(model)
@@ -159,9 +225,9 @@ def test_count_parameters_is_positive_and_trainable_matches() -> None:
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"msu": True}, "Milestone 4"),
+        ({"msu": True}, "Milestone 5"),
         ({"fusion": ["concat"] * 4}, "Milestone 4"),
-        ({"fusion": "single_b"}, "Milestone 3"),
+        ({"fusion": "single_b"}, "single_a"),
         ({"skip_convformer": True}, "skip_convformer"),
     ],
 )
@@ -173,7 +239,7 @@ def test_build_model_refuses_unimplemented_parts(overrides: Mapping[str, Any], m
 def test_net_rejects_more_than_one_encoder() -> None:
     encoder = ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False)
 
-    with pytest.raises(NotImplementedError, match="Milestone 3"):
+    with pytest.raises(NotImplementedError, match="Milestone 4"):
         PolypSegNet(encoder, channels=(8, 16, 32, 64), encoder_b=encoder)
 
 
@@ -189,6 +255,35 @@ def test_overfit_one_batch() -> None:
         ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False),
         channels=(8, 16, 32, 64),
         fusion="single_a",
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
+    loss_fn = build_loss({"train": {"loss": "bce_dice", "bce_weight": 1.0, "dice_weight": 1.0}})
+
+    generator = torch.Generator().manual_seed(1)
+    images = torch.randn(2, 3, 64, 64, generator=generator)
+    masks = torch.zeros(2, 1, 64, 64)
+    masks[:, :, 16:48, 20:44] = 1.0
+
+    losses: list[float] = []
+    for _ in range(40):
+        optimizer.zero_grad(set_to_none=True)
+        loss = loss_fn(model(images), masks)
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+
+    assert losses[-1] < 0.35 * losses[0], f"loss did not fall enough: {losses[0]:.3f} -> {losses[-1]:.3f}"
+    assert losses[-1] < 0.6, f"final loss {losses[-1]:.3f} is too high for one batch"
+
+
+def test_overfit_one_batch_branch_b() -> None:
+    """Branch B must also overfit one batch, proving its gradient path works."""
+    torch.manual_seed(0)
+    model = PolypSegNet(
+        encoder_a=None,
+        channels=(64, 128, 320, 512),
+        encoder_b=MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False),
+        fusion="single_b",
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
     loss_fn = build_loss({"train": {"loss": "bce_dice", "bce_weight": 1.0, "dice_weight": 1.0}})
