@@ -74,10 +74,10 @@ ln -s ../../../dataset/Kvasir-SEG/Kvasir-SEG data/raw
 ```
 
 Every image is RGB; every mask is a grayscale JPEG. Masks are **not strictly
-binary** (JPEG compression leaves about 18 grey levels), so they are binarised
-at `data.mask_threshold: 127` *before* resizing and resized with
-nearest-neighbour. `data.mask_ext` is therefore `.jpg` and `data.mask_suffix` is
-empty. `PolypDataset` returns
+binary** (all 1000 masks contain values other than 0/255; 19 grey levels
+overall), so they are binarised at `data.mask_threshold: 127` *before* resizing
+and resized with nearest-neighbour. `data.mask_ext` is therefore `.jpg` and
+`data.mask_suffix` is empty. `PolypDataset` returns
 `{"image": (3, H, W) float32, "mask": (1, H, W) float32 in {0, 1}, "id": str}`;
 images are normalised with ImageNet mean/std inside the dataset so both branches
 share one preprocessing.

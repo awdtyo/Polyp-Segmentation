@@ -53,7 +53,8 @@ version:
 - Inspected `/home/aditya/Desktop/polyp/dataset` without assumptions. Found
   `Kvasir-SEG/Kvasir-SEG/{images,masks,annotated_images,bbox}` plus 1000 CSVs
   and a PDF; 1000 images and 1000 masks with identical stems; every image RGB,
-  every mask grayscale JPEG; variable sizes around 570-626 x 528-547. Confirmed
+  every mask grayscale JPEG; sizes range from 332x352 to 1920x1072 (most common
+  622x530), and every mask contains values other than 0/255. Confirmed
   `images/<id>.jpg` / `masks/<id>.jpg`, with the caveat that JPEG masks are not
   strictly binary.
 - Wrote the dataset, split, cache and results decisions into AGENTS.md

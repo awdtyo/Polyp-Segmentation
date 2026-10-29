@@ -173,9 +173,10 @@ what was decided and what it replaced.
   1000 matching masks, used for both training and evaluation. Verified layout on
   2026-10-29: `Kvasir-SEG/Kvasir-SEG/images/<id>.jpg` and
   `Kvasir-SEG/Kvasir-SEG/masks/<id>.jpg`, identical sorted stems (1000/1000),
-  image sizes variable (roughly 570-626 x 528-547, e.g. 622x530). Masks are
-  grayscale JPEG, not PNG and not strictly binary (JPEG leaves ~18 grey levels),
-  so `data.mask_ext` is `.jpg` and masks are binarised with
+  image sizes variable (width 332-1920, height 352-1072; the most common is
+  622x530). Masks are grayscale JPEG, not PNG and not strictly binary (all 1000
+  masks contain values other than 0/255; 19 grey levels overall), so
+  `data.mask_ext` is `.jpg` and masks are binarised with
   `data.mask_threshold: 127` **before** resizing. This closes the section 1
   dataset TODO and replaces the PENDING dataset entry.
 - **2026-10-29 - Splits are image level, 800/100/100, seed 42.** Generated once
