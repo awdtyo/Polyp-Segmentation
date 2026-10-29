@@ -5,8 +5,9 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestone 1 of 7 complete; dataset preparation done; Milestone 2 in
-progress.** See [PROGRESS.md](PROGRESS.md) for the live checklist.
+Status: **Milestones 1-2 of 7 complete** (skeleton and dataset preparation;
+ConvNeXt-Base baseline with a plain decoder, training loop and resume). See
+[PROGRESS.md](PROGRESS.md) for the live checklist.
 
 ## Layout
 
@@ -151,6 +152,6 @@ it shares the channel widths.
 
 ## Roadmap
 
-See [PROGRESS.md](PROGRESS.md). Milestone 2 (ConvNeXt baseline + plain decoder +
-`train.py` with resume) is in progress; later milestones add the Meta-Polyp
-encoder, fusion, MSU, evaluation and the Colab launcher (AGENTS.md section 9).
+Milestones 1-2 are complete. Milestone 3 (Meta-Polyp encoder with the same
+decoder) is next; later milestones add fusion, MSU, evaluation and the Colab
+launcher (AGENTS.md section 9). See [PROGRESS.md](PROGRESS.md).

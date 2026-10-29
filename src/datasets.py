@@ -223,6 +223,15 @@ class PolypDataset(Dataset):
     def __len__(self) -> int:
         return len(self.ids)
 
+    @property
+    def uses_cache(self) -> bool:
+        """Whether samples are read from an npz cache instead of image files.
+
+        Returns:
+            True when ``cache_path`` was set and the cache loaded successfully.
+        """
+        return self._cache_images is not None
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         """Load one sample.
 

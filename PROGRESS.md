@@ -11,7 +11,7 @@ Last updated: 2026-10-29.
 - [x] 1. Skeleton: repo layout, `requirements.txt`, `.gitignore`, config
       loading, dataset class with synthetic-data test, metrics, losses, tests
       passing.
-- [ ] 2. Baseline: ConvNeXt encoder + plain decoder (no fusion, no MSU),
+- [x] 2. Baseline: ConvNeXt encoder + plain decoder (no fusion, no MSU),
       `train.py` with checkpoint and resume, `--smoke` run passes.
 - [ ] 3. Meta-Polyp encoder alone with the same decoder.
 - [ ] 4. Fusion: concat at stages 1 and 2, cross-attention at stages 3 and 4,
@@ -46,22 +46,48 @@ version:
 
 ## Last session (2026-10-29)
 
-- Read AGENTS.md and PROGRESS.md, then oriented the repo: one commit exists
-  (Milestone 1), all 143 tests passed on the CPU venv.
+- Read AGENTS.md and PROGRESS.md, then oriented the repo: one commit existed
+  (Milestone 1). The working tree already carried uncommitted draft Milestone 2
+  files from the previous session; they were reviewed, finished and committed
+  rather than discarded.
 - Inspected `/home/aditya/Desktop/polyp/dataset` without assumptions. Found
   `Kvasir-SEG/Kvasir-SEG/{images,masks,annotated_images,bbox}` plus 1000 CSVs
   and a PDF; 1000 images and 1000 masks with identical stems; every image RGB,
   every mask grayscale JPEG; variable sizes around 570-626 x 528-547. Confirmed
-  the expected `images/<id>.jpg` / `masks/<id>.jpg` pairing, with the caveat
-  that JPEG masks are not strictly binary.
+  `images/<id>.jpg` / `masks/<id>.jpg`, with the caveat that JPEG masks are not
+  strictly binary.
 - Wrote the dataset, split, cache and results decisions into AGENTS.md
   section 11 and created this file.
-- Note: the working tree also contained uncommitted draft Milestone 2 files
-  from the previous session (encoder, decoder, net, train, tests). They are
-  being reviewed and finished in this session rather than discarded.
+- Generated and committed `data/splits/{train,val,test}.txt`: 800/100/100,
+  seed 42, disjoint, all 1000 ids covered. The upstream 880/120 split is unused.
+- Added `scripts/build_cache.py` and cache loading in `PolypDataset`
+  (`data.cache_path`). Built the real 256x256 cache:
+  `data/cache/kvasir_seg_256.npz`, **143.5 MB**, about 11 s on this CPU box.
+  Raw and cached samples were checked to be byte-identical, and the cache is
+  git-ignored.
+- Finished Milestone 2: ConvNeXt wrapper, plain U-Net decoder with
+  `ConvTranspose2d` upsampling and concat skips, assembled net, differential-LR
+  AdamW, cosine schedule with optional warmup, AMP/GradScaler on CUDA, gradient
+  accumulation/clipping, automatic resume from `last.pt`, `best.pt`,
+  `metrics.csv`, `run_info.json`, prediction grids, and `--smoke`.
+- Parameter counts (CPU, randomly initialised, no weights downloaded):
+  `convnext_base.fb_in1k` baseline **97.22 M** (87.56 M encoder + 9.66 M
+  alignment/decoder/head); `convnext_small.fb_in1k` fallback **58.93 M**
+  (49.45 M + 9.47 M). No VRAM number is claimed; that needs a T4 run.
+- Tests: `pytest -q` -> **152 passed** on CPU. The smoke run passed and wrote
+  `config_resolved.yaml`, `run_info.json`, `metrics.csv`, `last.pt`, `best.pt`
+  and a prediction grid. Its synthetic val Dice (0.1986) is a pipeline check,
+  not a result.
+- Fixed two issues found while finishing: `last.pt` is now written after the
+  best-check so a disconnect cannot make resume overwrite `best.pt` with a worse
+  epoch, and `metrics.csv` logs the LR at epoch start rather than the
+  post-anneal value (which was 0 in a one-epoch smoke run).
 
 ### Open questions
 
-- None blocking Milestone 2. Pending for later: whether the Colab T4 fits
-  ConvNeXt-Base at 256x256, and whether branch B is trained pretrained or from
-  scratch in the first real run.
+- Confirm on Colab whether ConvNeXt-Base at 256x256 fits the free T4; if not,
+  switch to `configs/exp002_convnext_small_baseline.yaml` (a config change, not
+  a silent default change).
+- Decide `pretrained_b` for the first branch-B run (Milestone 3), and whether
+  to build the npz cache on Colab or read JPEGs directly.
+- Real-data training is not started. Milestones 3-7 remain.
