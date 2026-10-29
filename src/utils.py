@@ -36,6 +36,9 @@ STAGE_FUSION_MODES: frozenset[str] = frozenset(
 )
 #: Encoder choices accepted by ``model.encoder``.
 ENCODER_KINDS: frozenset[str] = frozenset({"convnext", "caformer", "dual"})
+#: Decoder MSU variants accepted by ``decoder.msu_mode``. Only ``paper`` is
+#: implemented; ``released`` is accepted here and rejected by the model builder.
+MSU_MODES: frozenset[str] = frozenset({"paper", "released"})
 
 #: Loss names accepted by :func:`src.losses.build_loss`.
 LOSS_NAMES: frozenset[str] = frozenset({"bce_dice", "dice", "jaccard", "bce"})
@@ -107,11 +110,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fusion": ["concat", "concat", "xattn", "xattn"],
         "fusion_heads": 8,
         "pos_enc_2d": False,
-        "msu": True,
-        # paper: decoder 3 x4 -> decoder 1. released: the repo's F2-level x8 link.
-        "msu_mode": "paper",
         # Reserved: the paper's Convformer skip block. Not implemented.
         "skip_convformer": False,
+    },
+    "decoder": {
+        "msu": False,
+        # paper: D4 x4 -> D2 and D3 x4 -> D1. released: reserved, raises.
+        "msu_mode": "paper",
     },
     "logging": {
         "wandb": False,
@@ -274,13 +279,19 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     for key in ("encoder_a", "encoder_b"):
         if not isinstance(model[key], str) or not model[key].strip():
             problems.append(f"model.{key} must be a non-empty timm model name")
-    if model["msu_mode"] not in {"paper", "released"}:
-        problems.append(f"model.msu_mode must be 'paper' or 'released', got {model['msu_mode']!r}")
     if not isinstance(model["skip_convformer"], bool):
         problems.append("model.skip_convformer must be a bool")
-    for key in ("pretrained_a", "pretrained_b", "msu", "pos_enc_2d"):
+    for key in ("pretrained_a", "pretrained_b", "pos_enc_2d"):
         if not isinstance(model[key], bool):
             problems.append(f"model.{key} must be a bool")
+
+    decoder = cfg["decoder"]
+    if not isinstance(decoder["msu"], bool):
+        problems.append("decoder.msu must be a bool")
+    if decoder["msu_mode"] not in MSU_MODES:
+        problems.append(
+            f"decoder.msu_mode must be one of {sorted(MSU_MODES)}, got {decoder['msu_mode']!r}"
+        )
 
     if problems:
         raise ConfigError("; ".join(problems))

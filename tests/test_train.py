@@ -46,6 +46,7 @@ BASELINE_CONFIG = REPO_ROOT / "configs" / "exp001_convnext_base_baseline.yaml"
 CAFORMER_CONFIG = REPO_ROOT / "configs" / "exp003_caformer_s18_baseline.yaml"
 HYBRID_CONFIG = REPO_ROOT / "configs" / "exp005_hybrid_fusion.yaml"
 ALL_CONCAT_CONFIG = REPO_ROOT / "configs" / "exp006_all_concat.yaml"
+HYBRID_MSU_CONFIG = REPO_ROOT / "configs" / "exp007_hybrid_msu.yaml"
 
 
 def tiny_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -63,7 +64,6 @@ def tiny_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, A
         "pretrained_a": False,
         "pretrained_b": False,
         "fusion": ["single_a", "single_a", "single_a", "single_a"],
-        "msu": False,
     }
     model.update(dict(model_overrides or {}))
     return load_config(BASE_CONFIG, overrides={"model": model})
@@ -455,10 +455,11 @@ def test_caformer_smoke_run_end_to_end(
 
 
 @pytest.mark.parametrize(
-    ("config_path", "run_name", "expected_fusion"),
+    ("config_path", "run_name", "expected_fusion", "expected_msu"),
     [
-        (HYBRID_CONFIG, "exp005_hybrid_fusion_smoke", ["concat", "concat", "xattn", "xattn"]),
-        (ALL_CONCAT_CONFIG, "exp006_all_concat_smoke", ["concat"] * 4),
+        (HYBRID_CONFIG, "exp005_hybrid_fusion_smoke", ["concat", "concat", "xattn", "xattn"], False),
+        (ALL_CONCAT_CONFIG, "exp006_all_concat_smoke", ["concat"] * 4, False),
+        (HYBRID_MSU_CONFIG, "exp007_hybrid_msu_smoke", ["concat", "concat", "xattn", "xattn"], True),
     ],
 )
 def test_dual_fusion_smoke_run_end_to_end(
@@ -468,8 +469,9 @@ def test_dual_fusion_smoke_run_end_to_end(
     config_path: Path,
     run_name: str,
     expected_fusion: list[str],
+    expected_msu: bool,
 ) -> None:
-    """Both Milestone 4 configs must smoke-test the real dual fusion path."""
+    """Milestone 4/5 configs must smoke-test their real dual path."""
     monkeypatch.chdir(tmp_path)
     out_root = tmp_path / "runs"
 
@@ -487,7 +489,7 @@ def test_dual_fusion_smoke_run_end_to_end(
     assert info["model"]["pretrained_a"] is False
     assert info["model"]["pretrained_b"] is False
     assert info["model"]["fusion"] == expected_fusion
-    assert info["model"]["msu"] is False
+    assert info["model"]["msu"] is expected_msu
     assert info["params_total"] > 0
     assert info["image_size"] == 64
 

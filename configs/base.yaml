@@ -61,9 +61,11 @@ model:
   fusion: [concat, concat, xattn, xattn]     # stages 1..4, or hybrid / all_concat / single_a / single_b
   fusion_heads: 8
   pos_enc_2d: false
-  msu: true
-  msu_mode: paper        # paper | released (released is reserved for an ablation)
   skip_convformer: false # reserved; true is not implemented
+
+decoder:
+  msu: false             # default off; exp007_hybrid_msu.yaml enables it
+  msu_mode: paper        # paper | released (released is reserved for an ablation)
 
 logging:
   wandb: false

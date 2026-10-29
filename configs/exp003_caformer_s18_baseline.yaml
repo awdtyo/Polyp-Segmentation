@@ -52,9 +52,11 @@ model:
   fusion: [single_b, single_b, single_b, single_b]
   fusion_heads: 8
   pos_enc_2d: false
+  skip_convformer: false
+
+decoder:
   msu: false
   msu_mode: paper
-  skip_convformer: false
 
 logging:
   wandb: false

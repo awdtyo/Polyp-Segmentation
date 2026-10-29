@@ -242,3 +242,14 @@ what was decided and what it replaced.
   approved and is the only new architecture work in this session. MSU
   (Milestone 5), `evaluate.py`/ablation configs (Milestone 6) and the final
   README (Milestone 7) remain pending explicit approval.
+- **2026-10-29 - Milestone 5 approved; MSU implemented; config moved under
+  `decoder`.** MSU lives in `src/models/msu.py`. The canonical keys are now
+  `decoder.msu` (default `false`) and `decoder.msu_mode: paper | released`,
+  replacing `model.msu` / `model.msu_mode` from the 2026-10-28 entry. Paper
+  mode projects with a 1x1 conv, upsamples x4, adds D4 into D2 before D1 is
+  decoded, adds D3 into D1, and applies ReLU after each addition. `released` is
+  accepted by config validation but raises `NotImplementedError`.
+  `decoder.msu: false` keeps the exact Milestone 4 state_dict keys. The optional
+  `norm: batch | group` switch was not implemented; BatchNorm remains in channel
+  alignment, concat fusion, the decoder conv blocks and the head norm.
+  Milestones 6-7 remain pending explicit approval.

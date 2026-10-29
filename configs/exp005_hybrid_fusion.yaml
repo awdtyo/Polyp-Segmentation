@@ -1,8 +1,8 @@
 # exp005 - Milestone 4: hybrid dual-encoder fusion.
 # ConvNeXt-Base (Branch A) and CAFormer-S18 (Branch B) both run on the same
 # input. Stages 1-2 use concat fusion; stages 3-4 use cross-attention with
-# ConvNeXt as query and CAFormer as key/value. No MSU yet (Milestone 5).
-# Both encoders use their pinned ImageNet weights on Colab.
+# ConvNeXt as query and CAFormer as key/value. MSU is off in this ablation;
+# exp007 adds it. Both encoders use their pinned ImageNet weights on Colab.
 
 run:
   name: exp005_hybrid_fusion
@@ -54,9 +54,11 @@ model:
   fusion: hybrid          # [concat, concat, xattn, xattn]
   fusion_heads: 8
   pos_enc_2d: false
-  msu: false              # Milestone 5
-  msu_mode: paper
   skip_convformer: false
+
+decoder:
+  msu: false              # exp007 enables paper-mode MSU
+  msu_mode: paper
 
 logging:
   wandb: false

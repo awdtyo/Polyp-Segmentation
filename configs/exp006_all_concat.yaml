@@ -1,7 +1,7 @@
 # exp006 - Milestone 4 ablation: all-concat dual-encoder fusion.
 # Same two pretrained encoders and decoder as exp005, but every stage uses
 # concat fusion. This isolates the contribution of the stage 3-4 cross-attention
-# without changing the encoders or the data. No MSU yet (Milestone 5).
+# without changing the encoders or the data. MSU is off in this ablation.
 
 run:
   name: exp006_all_concat
@@ -53,9 +53,11 @@ model:
   fusion: all_concat      # [concat, concat, concat, concat]
   fusion_heads: 8
   pos_enc_2d: false
-  msu: false              # Milestone 5
-  msu_mode: paper
   skip_convformer: false
+
+decoder:
+  msu: false              # exp007 enables paper-mode MSU
+  msu_mode: paper
 
 logging:
   wandb: false

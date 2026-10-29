@@ -107,12 +107,6 @@ def test_count_parameters_tracks_frozen_layers(model: PolypSegNet) -> None:
         first.requires_grad_(True)
 
 
-def test_msu_config_raises_until_milestone_5(baseline_cfg: dict) -> None:
-    cfg = load_config(BASELINE, overrides={"model": {"encoder_a": "convnext_tiny.fb_in1k", "pretrained_a": False, "msu": True}})
-    with pytest.raises(NotImplementedError, match="Milestone 5|MSU"):
-        build_model(cfg)
-
-
 def test_hybrid_fusion_builds_dual_branch() -> None:
     cfg = load_config(
         REPO_ROOT / "configs" / "base.yaml",
@@ -122,7 +116,6 @@ def test_hybrid_fusion_builds_dual_branch() -> None:
                 "encoder_a": "convnext_tiny.fb_in1k",
                 "pretrained_a": False,
                 "pretrained_b": False,
-                "msu": False,
             }
         },
     )
@@ -186,15 +179,6 @@ def test_caformer_skip_convformer_still_raises() -> None:
         build_model(cfg)
 
 
-def test_caformer_msu_still_raises_until_milestone_5() -> None:
-    cfg = load_config(
-        CAFORMER,
-        overrides={"model": {"pretrained_b": False, "msu": True}},
-    )
-    with pytest.raises(NotImplementedError, match="Milestone 5"):
-        build_model(cfg)
-
-
 def test_skip_convformer_true_raises() -> None:
     cfg = load_config(
         BASELINE,
@@ -206,7 +190,7 @@ def test_skip_convformer_true_raises() -> None:
 
 def test_unknown_msu_mode_is_rejected_at_config_load() -> None:
     with pytest.raises(ValueError, match="msu_mode"):
-        load_config(BASELINE, overrides={"model": {"msu_mode": "other"}})
+        load_config(BASELINE, overrides={"decoder": {"msu_mode": "other"}})
 
 
 def test_net_rejects_an_encoder_returning_the_wrong_count() -> None:

@@ -1,15 +1,16 @@
 """The assembled segmentation model and its parameter groups.
 
-Milestone 4 assembles the dual-branch model: ConvNeXt (Branch A) and the
-Meta-Polyp CAFormer encoder (Branch B) run on the same input, each stage is
-aligned to the shared width, fused by concatenation or cross-attention, and the
-plain decoder produces logits. The ``single_a`` and ``single_b`` presets keep
-the Milestone 2-3 baselines and skip the unused encoder entirely.
+The dual-branch model runs ConvNeXt (Branch A) and the Meta-Polyp CAFormer
+encoder (Branch B) on the same input, aligns each stage to the shared width,
+fuses it by concatenation or cross-attention, and decodes the result. The
+``single_a`` and ``single_b`` presets keep the Milestone 2-3 baselines and skip
+the unused encoder entirely.
 
-MSU (Milestone 5) and the Convformer skip block remain unimplemented. Anything
-the config asks for that is not implemented raises ``NotImplementedError`` with
-the milestone that owns it, so an experiment can never silently train a
-different architecture than it claims.
+Milestone 5 adds the optional paper-mode MSU links inside the decoder. The
+Convformer skip block remains unimplemented. Anything the config asks for that
+is not implemented raises ``NotImplementedError`` with the milestone that owns
+it, so an experiment can never silently train a different architecture than it
+claims.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ class PolypSegNet(nn.Module):
         fusion_heads: Attention heads for every ``xattn`` stage. The stage width
             must be divisible by this number.
         pos_enc_2d: Add a fixed 2-D sinusoidal encoding before cross-attention.
+        msu: Add the two paper-mode MSU links to the decoder.
+        msu_mode: ``paper`` (implemented) or ``released`` (reserved; raises).
 
     Forward:
         ``x: (B, 3, H, W)`` -> logits ``(B, 1, H, W)``.
@@ -50,6 +53,7 @@ class PolypSegNet(nn.Module):
     Raises:
         ValueError: if the encoders do not match the fusion mode, or a width is
             not divisible by ``fusion_heads``.
+        NotImplementedError: if ``msu_mode='released'`` is requested.
     """
 
     def __init__(
@@ -60,6 +64,8 @@ class PolypSegNet(nn.Module):
         fusion: str | Sequence[str] = "single_a",
         fusion_heads: int = 8,
         pos_enc_2d: bool = False,
+        msu: bool = False,
+        msu_mode: str = "paper",
     ) -> None:
         super().__init__()
         modes = resolve_fusion_modes(fusion)
@@ -70,7 +76,7 @@ class PolypSegNet(nn.Module):
         self.channels = [int(c) for c in channels]
         if len(self.channels) != 4:
             raise ValueError(f"channels must have 4 entries (stages 1-4), got {self.channels}")
-        self.decoder = PlainDecoder(self.channels)
+        self.decoder = PlainDecoder(self.channels, msu=msu, msu_mode=msu_mode)
 
         if branch == "single_a":
             if encoder_a is None:
@@ -234,18 +240,19 @@ def build_model(cfg: Mapping[str, Any]) -> PolypSegNet:
         cfg: Resolved config; reads ``model.encoder``, ``model.encoder_a``,
             ``model.encoder_b``, the pretrained flags, ``model.channels``,
             ``model.fusion``, ``model.fusion_heads``, ``model.pos_enc_2d``,
-            ``model.msu``, ``model.msu_mode`` and ``model.skip_convformer``.
+            ``model.skip_convformer``, ``decoder.msu`` and ``decoder.msu_mode``.
 
     Returns:
         The assembled model, on CPU, in train mode.
 
     Raises:
         ValueError: if ``model.encoder`` is unknown or does not match
-            ``model.fusion``.
-        NotImplementedError: if the config asks for a component that a later
-            milestone owns (MSU, the Convformer skip block).
+            ``model.fusion``, or if ``decoder.msu_mode`` is unknown.
+        NotImplementedError: if the config asks for a component that is not
+            implemented (the released MSU variant or the Convformer skip block).
     """
     model_cfg = cfg["model"]
+    decoder_cfg = cfg["decoder"]
     encoder_kind = str(model_cfg["encoder"])
     if encoder_kind not in ENCODER_KINDS:
         raise ValueError(f"model.encoder must be one of {sorted(ENCODER_KINDS)}, got {encoder_kind!r}")
@@ -256,14 +263,17 @@ def build_model(cfg: Mapping[str, Any]) -> PolypSegNet:
             "is deliberately out of scope (AGENTS.md section 11). Leave it false."
         )
 
-    modes = resolve_fusion_modes(model_cfg["fusion"])
-    if bool(model_cfg["msu"]):
-        if model_cfg["msu_mode"] not in {"paper", "released"}:
-            raise ValueError(f"Unknown msu_mode {model_cfg['msu_mode']!r}")
+    msu = bool(decoder_cfg["msu"])
+    msu_mode = str(decoder_cfg["msu_mode"])
+    if msu_mode not in {"paper", "released"}:
+        raise ValueError(f"Unknown decoder.msu_mode {msu_mode!r}; expected 'paper' or 'released'")
+    if msu and msu_mode == "released":
         raise NotImplementedError(
-            "MSU is not implemented yet (Milestone 5); leave model.msu false for the baselines"
+            "decoder.msu_mode='released' is not implemented; only 'paper' is available "
+            "(AGENTS.md section 11)"
         )
 
+    modes = resolve_fusion_modes(model_cfg["fusion"])
     branch = fusion_branch(modes)
     expected_encoder = {"single_a": "convnext", "single_b": "caformer", "dual": "dual"}[branch]
     if encoder_kind != expected_encoder:
@@ -285,6 +295,8 @@ def build_model(cfg: Mapping[str, Any]) -> PolypSegNet:
             fusion=modes,
             fusion_heads=int(model_cfg["fusion_heads"]),
             pos_enc_2d=bool(model_cfg["pos_enc_2d"]),
+            msu=msu,
+            msu_mode=msu_mode,
         )
 
     if branch == "single_b":
@@ -299,6 +311,8 @@ def build_model(cfg: Mapping[str, Any]) -> PolypSegNet:
             fusion=modes,
             fusion_heads=int(model_cfg["fusion_heads"]),
             pos_enc_2d=bool(model_cfg["pos_enc_2d"]),
+            msu=msu,
+            msu_mode=msu_mode,
         )
 
     encoder_a = ConvNeXtEncoder(
@@ -316,4 +330,6 @@ def build_model(cfg: Mapping[str, Any]) -> PolypSegNet:
         fusion=modes,
         fusion_heads=int(model_cfg["fusion_heads"]),
         pos_enc_2d=bool(model_cfg["pos_enc_2d"]),
+        msu=msu,
+        msu_mode=msu_mode,
     )

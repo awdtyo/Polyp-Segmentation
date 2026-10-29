@@ -90,9 +90,9 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
 
     Returns:
         A modified deep copy: 1 epoch, 64 px, batch 2, 3 steps, no pretrained
-        download, no W&B, no workers. The config's branch layout and fusion
-        preset are preserved, so a dual-encoder config still exercises both
-        encoders and the real fusion path in the smoke run.
+        download, no W&B, no workers. The config's branch layout, fusion preset
+        and decoder MSU setting are preserved, so a dual-encoder or MSU config
+        still exercises the real path in the smoke run.
     """
     smoke = copy.deepcopy(dict(cfg))
     smoke["run"]["name"] = f"{smoke['run']['name']}_smoke"
@@ -108,7 +108,6 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
             "encoder_a": "convnext_tiny.fb_in1k",
             "pretrained_a": False,
             "pretrained_b": False,
-            "msu": False,
             "skip_convformer": False,
         }
     )
@@ -804,8 +803,8 @@ def write_run_info(
             "pretrained_a": bool(cfg["model"]["pretrained_a"]),
             "pretrained_b": bool(cfg["model"]["pretrained_b"]),
             "fusion": resolve_fusion_modes(cfg["model"]["fusion"]),
-            "msu": bool(cfg["model"]["msu"]),
-            "msu_mode": cfg["model"]["msu_mode"],
+            "msu": bool(cfg["decoder"]["msu"]),
+            "msu_mode": cfg["decoder"]["msu_mode"],
             "skip_convformer": bool(cfg["model"]["skip_convformer"]),
             "channels": list(cfg["model"]["channels"]),
         },

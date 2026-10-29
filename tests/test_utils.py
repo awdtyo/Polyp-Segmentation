@@ -38,6 +38,8 @@ def test_base_config_loads_with_expected_values() -> None:
     assert cfg["model"]["encoder"] == "dual"
     assert cfg["model"]["fusion"] == ["concat", "concat", "xattn", "xattn"]
     assert cfg["model"]["channels"] == [64, 128, 320, 512]
+    assert cfg["decoder"]["msu"] is False
+    assert cfg["decoder"]["msu_mode"] == "paper"
     assert cfg["train"]["loss"] == "bce_dice"
     assert cfg["logging"]["wandb"] is False
 
@@ -150,7 +152,8 @@ def test_branch_b_configs_are_pinned_and_consistent() -> None:
         assert cfg["model"]["encoder"] == "caformer"
         assert cfg["model"]["encoder_b"] == "caformer_s18.sail_in1k"
         assert cfg["model"]["fusion"] == ["single_b"] * 4
-        assert cfg["model"]["msu"] is False
+        assert cfg["decoder"]["msu"] is False
+        assert cfg["decoder"]["msu_mode"] == "paper"
         assert cfg["model"]["channels"] == [64, 128, 320, 512]
 
     assert pretrained["model"]["pretrained_b"] is True
@@ -169,7 +172,8 @@ def test_dual_branch_configs_are_pinned_and_consistent() -> None:
         assert cfg["model"]["encoder_b"] == "caformer_s18.sail_in1k"
         assert cfg["model"]["pretrained_a"] is True
         assert cfg["model"]["pretrained_b"] is True
-        assert cfg["model"]["msu"] is False
+        assert cfg["decoder"]["msu"] is False
+        assert cfg["decoder"]["msu_mode"] == "paper"
         assert cfg["model"]["channels"] == [64, 128, 320, 512]
         assert cfg["train"]["lr_convnext"] == pytest.approx(3e-5)
         assert cfg["train"]["lr_encoder_b"] == pytest.approx(1e-4)
@@ -177,6 +181,16 @@ def test_dual_branch_configs_are_pinned_and_consistent() -> None:
 
     assert hybrid["model"]["fusion"] == "hybrid"
     assert all_concat["model"]["fusion"] == "all_concat"
+
+
+def test_exp007_enables_paper_msu() -> None:
+    cfg = utils.load_config(REPO_ROOT / "configs" / "exp007_hybrid_msu.yaml")
+
+    assert cfg["model"]["encoder"] == "dual"
+    assert cfg["model"]["fusion"] == "hybrid"
+    assert cfg["model"]["pretrained_a"] is True
+    assert cfg["model"]["pretrained_b"] is True
+    assert cfg["decoder"] == {"msu": True, "msu_mode": "paper"}
 
 
 def test_unknown_loss_raises(tmp_path: Path) -> None:

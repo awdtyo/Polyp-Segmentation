@@ -1,11 +1,12 @@
-"""Channel alignment and the plain U-Net decoder.
+"""Channel alignment and the U-Net decoder.
 
-Milestone 2 decoder, per AGENTS.md section 3.4 without fusion and without MSU:
+Decoder per AGENTS.md section 3.4:
 
 * Decoder 4: conv block on the fused (here: aligned) stage-4 map.
 * Decoders 3, 2, 1: ``ConvTranspose2d`` x2 upsample of the previous decoder
   output, concat with the stage skip, then a conv block (3x3 conv + norm +
   activation, twice).
+* Multi-scale Upsampling (MSU), optional: D4 x4 into D2 and D3 x4 into D1.
 * Head: upsample x4 to full resolution, ``1x1`` conv to one channel.
 
 The model returns **logits**; sigmoid is applied only in the loss and at inference.
@@ -17,6 +18,8 @@ from typing import Sequence
 
 import torch
 from torch import Tensor, nn
+
+from src.models.msu import MSU
 
 
 def make_norm(channels: int) -> nn.Module:
@@ -99,12 +102,15 @@ class ConvBlock(nn.Module):
 
 
 class PlainDecoder(nn.Module):
-    """U-Net decoder with transposed-conv upsampling and concat skips.
+    """U-Net decoder with transposed-conv upsampling, concat skips and optional MSU.
 
     Args:
         channels: Fused width per stage ``C1..C4``, ordered stage 1 (stride 4) to
             stage 4 (stride 32). Defaults to the Meta-Polyp widths.
         head_channels: Width of the pre-head projection at full resolution.
+        msu: Add the two paper-mode MSU links. When false, no MSU module is
+            registered, so the state dict is exactly the Milestone 4 decoder.
+        msu_mode: ``paper`` (implemented) or ``released`` (reserved; raises).
 
     Forward:
         ``features``: 4 tensors, already aligned to ``channels``, ordered stage 1
@@ -112,12 +118,27 @@ class PlainDecoder(nn.Module):
         logits ``(B, 1, H, W)`` at the input resolution.
     """
 
-    def __init__(self, channels: Sequence[int] = (64, 128, 320, 512), head_channels: int = 32) -> None:
+    def __init__(
+        self,
+        channels: Sequence[int] = (64, 128, 320, 512),
+        head_channels: int = 32,
+        *,
+        msu: bool = False,
+        msu_mode: str = "paper",
+    ) -> None:
         super().__init__()
         if len(channels) != 4:
             raise ValueError(f"channels must have 4 entries (stages 1-4), got {len(channels)}")
+        if msu_mode not in {"paper", "released"}:
+            raise ValueError(f"Unknown msu_mode {msu_mode!r}; expected 'paper' or 'released'")
+        if msu and msu_mode == "released":
+            raise NotImplementedError(
+                "decoder.msu_mode='released' is not implemented; only 'paper' is available "
+                "(AGENTS.md section 11)"
+            )
         c1, c2, c3, c4 = (int(c) for c in channels)
         self.channels = [c1, c2, c3, c4]
+        self.msu_mode = str(msu_mode)
 
         self.dec4 = ConvBlock(c4, c4)
 
@@ -129,6 +150,10 @@ class PlainDecoder(nn.Module):
 
         self.up2_to_1 = nn.ConvTranspose2d(c2, c1, kernel_size=2, stride=2)
         self.dec1 = ConvBlock(c1 + c1, c1)
+
+        # MSU is registered only when enabled, so msu=False keeps the exact
+        # Milestone 4 parameter set and state_dict keys.
+        self.msu: MSU | None = MSU(self.channels) if msu else None
 
         # Full-resolution head: x4 transposed conv, then 1x1 to one logit channel.
         self.head_up = nn.ConvTranspose2d(c1, head_channels, kernel_size=4, stride=4)
@@ -156,11 +181,22 @@ class PlainDecoder(nn.Module):
             if feature.shape[1] != expected:
                 raise ValueError(f"Stage {index} has {feature.shape[1]} channels, expected {expected}")
 
-        x = self.dec4(f4)  # (B, C4, H/32, W/32)
-        x = self.dec3(self._cat(self.up4_to_3(x), f3))  # (B, C3, H/16, W/16)
-        x = self.dec2(self._cat(self.up3_to_2(x), f2))  # (B, C2, H/8, W/8)
-        x = self.dec1(self._cat(self.up2_to_1(x), f1))  # (B, C1, H/4, W/4)
-        x = self.head_act(self.head_norm(self.head_up(x)))  # (B, head, H, W)
+        d4 = self.dec4(f4)  # (B, C4, H/32, W/32)
+        d3 = self.dec3(self._cat(self.up4_to_3(d4), f3))  # (B, C3, H/16, W/16)
+        d2 = self.dec2(self._cat(self.up3_to_2(d3), f2))  # (B, C2, H/8, W/8)
+
+        # D4 -> D2 must happen before D1 is computed, otherwise the D4 link
+        # would be dead: nothing downstream would read the updated D2.
+        if self.msu is not None:
+            d2 = self.msu.d4_to_d2(d4, d2)
+
+        d1 = self.dec1(self._cat(self.up2_to_1(d2), f1))  # (B, C1, H/4, W/4)
+
+        # D3 -> D1 is added after the D1 block, per the paper's second link.
+        if self.msu is not None:
+            d1 = self.msu.d3_to_d1(d3, d1)
+
+        x = self.head_act(self.head_norm(self.head_up(d1)))  # (B, head, H, W)
         return self.head_conv(x)  # (B, 1, H, W)
 
     @staticmethod

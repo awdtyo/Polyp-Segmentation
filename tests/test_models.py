@@ -33,14 +33,19 @@ EXPECTED_STRIDES = (4, 8, 16, 32)
 CONVNEXT_BASE_CHANNELS = [128, 256, 512, 1024]
 
 
-def baseline_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def baseline_config(
+    model_overrides: Mapping[str, Any] | None = None,
+    decoder_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a Milestone-2 (single-encoder baseline) config.
 
     Args:
-        model_overrides: Optional ``model.*`` values to change, e.g. ``{"msu": True}``.
+        model_overrides: Optional ``model.*`` values to change.
+        decoder_overrides: Optional ``decoder.*`` values to change, e.g.
+            ``{"msu": True}``.
 
     Returns:
-        Resolved config with a tiny, randomly initialised ConvNeXt and no fusion/MSU.
+        Resolved config with a tiny, randomly initialised ConvNeXt and no fusion.
     """
     model: dict[str, Any] = {
         "encoder": "convnext",
@@ -48,10 +53,12 @@ def baseline_config(model_overrides: Mapping[str, Any] | None = None) -> dict[st
         "pretrained_a": False,
         "pretrained_b": False,
         "fusion": ["single_a", "single_a", "single_a", "single_a"],
-        "msu": False,
     }
     model.update(dict(model_overrides or {}))
-    return load_config(REPO_ROOT / "configs" / "base.yaml", overrides={"model": model})
+    return load_config(
+        REPO_ROOT / "configs" / "base.yaml",
+        overrides={"model": model, "decoder": dict(decoder_overrides or {"msu": False})},
+    )
 
 
 def caformer_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -227,16 +234,9 @@ def test_count_parameters_is_positive_and_trainable_matches() -> None:
     assert total == trainable
 
 
-@pytest.mark.parametrize(
-    ("overrides", "message"),
-    [
-        ({"msu": True}, "Milestone 5"),
-        ({"skip_convformer": True}, "skip_convformer"),
-    ],
-)
-def test_build_model_refuses_unimplemented_parts(overrides: Mapping[str, Any], message: str) -> None:
-    with pytest.raises(NotImplementedError, match=message):
-        build_model(baseline_config(overrides))
+def test_build_model_refuses_unimplemented_parts() -> None:
+    with pytest.raises(NotImplementedError, match="skip_convformer"):
+        build_model(baseline_config({"skip_convformer": True}))
 
 
 def test_build_model_rejects_encoder_fusion_mismatch() -> None:
@@ -252,17 +252,18 @@ def test_net_rejects_more_than_one_encoder_in_single_mode() -> None:
 
 
 def test_overfit_one_batch() -> None:
-    """The model must drive one batch's loss clearly down in ~40 CPU steps.
+    """The model with MSU on must drive one batch's loss down in ~40 CPU steps.
 
     This is the check that catches a broken gradient path (AGENTS.md section 8).
-    A narrow, shallow config is used so the test finishes in about half a minute:
-    the architecture under test is the same, only the widths differ.
+    A narrow, shallow config is used so the test finishes quickly: the
+    architecture under test is the same, only the widths differ.
     """
     torch.manual_seed(0)
     model = PolypSegNet(
         ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False),
         channels=(8, 16, 32, 64),
         fusion="single_a",
+        msu=True,
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
     loss_fn = build_loss({"train": {"loss": "bce_dice", "bce_weight": 1.0, "dice_weight": 1.0}})

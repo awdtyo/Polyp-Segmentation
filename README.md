@@ -5,11 +5,12 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestones 1-4 of 7 complete** (skeleton and dataset preparation;
+Status: **Milestones 1-5 of 7 complete** (skeleton and dataset preparation;
 ConvNeXt-Base baseline with a plain decoder, training loop and resume; Meta-Polyp
 CAFormer-S18 branch with the same decoder; dual-encoder fusion with concat at
-stages 1-2 and cross-attention at stages 3-4). MSU, evaluation and the final
-README remain. See [PROGRESS.md](PROGRESS.md) for the live checklist.
+stages 1-2 and cross-attention at stages 3-4; paper-mode multi-scale upsampling
+links). Evaluation and the final README remain. See
+[PROGRESS.md](PROGRESS.md) for the live checklist.
 
 ## Layout
 
@@ -28,11 +29,12 @@ src/models/            encoders, fusion, decoder, MSU, net (milestones 2-5)
   convnext_enc.py      Branch A: ConvNeXt via timm
   metapolyp_enc.py     Branch B: CAFormer-S18 (Meta-Polyp encoder) via timm
   fusion.py            per-stage concat and cross-attention fusion
-  decoder.py           channel alignment + plain U-Net decoder
+  msu.py               paper-mode multi-scale upsampling links
+  decoder.py           channel alignment + U-Net decoder with optional MSU
   net.py               assembled dual/single-branch model, parameter groups
 src/train.py           training entry point (milestone 2)
 src/evaluate.py        evaluation entry point (milestone 6)
-tests/                 CPU tests, under a minute
+tests/                 CPU tests (about 1-2 minutes)
 results/results.csv    one row per evaluated run
 notebooks/             thin Colab launcher (`colab_run.ipynb`)
 ```
@@ -64,13 +66,14 @@ PY
 `data.image_size` must be divisible by 32 (the encoders downsample by 32).
 `model.encoder: convnext | caformer | dual` selects the branch layout. The
 baselines use `single_a`/`single_b` fusion, for example
-`model.fusion: [single_b, single_b, single_b, single_b]`, and `model.msu: false`.
-The dual model sets `model.encoder: dual` and uses one of the fusion presets
-`hybrid` (`[concat, concat, xattn, xattn]`), `all_concat`, or an explicit
-four-stage list. `exp005` is the hybrid fusion config; `exp006` is the all-concat
-ablation. MSU is not implemented yet (Milestone 5), so the runnable baseline and
-fusion configs set `model.msu: false`; `configs/base.yaml` keeps the eventual
-`msu: true` default and will not build until Milestone 5.
+`model.fusion: [single_b, single_b, single_b, single_b]`, and
+`decoder.msu: false`. The dual model sets `model.encoder: dual` and uses one of
+the fusion presets `hybrid` (`[concat, concat, xattn, xattn]`), `all_concat`, or
+an explicit four-stage list. `exp005` is the hybrid fusion config, `exp006` is
+the all-concat ablation, and `exp007` is hybrid fusion with MSU. `decoder.msu`
+defaults to `false`; `decoder.msu_mode: paper` is implemented as D4 x4 into D2
+and D3 x4 into D1. `released` is accepted by config validation but the builder
+raises `NotImplementedError` because that variant is deliberately reserved.
 
 ## Data contract
 
@@ -146,12 +149,14 @@ against hand-computed values, loss behaviour and differentiability, split
 generation (counts, determinism, group disjointness), and the committed
 Kvasir-SEG split (800/100/100, disjoint). Model tests cover both encoders
 (4 maps, strides 4/8/16/32, expected widths), every implemented fusion mode
-(concat, cross-attention and the presets), the Branch A, Branch B and hybrid
-overfit-one-batch checks, parameter-group coverage, and an end-to-end `--smoke`
-run for each branch layout, including `exp005` and `exp006`. No test downloads
-pretrained weights: every test passes `pretrained=False`. The albumentations
-augmentation test is skipped when albumentations is not installed; everything
-else runs with torch + Pillow + YAML only.
+(concat, cross-attention and the presets), MSU link shapes, D4->D2 and D3->D1
+information flow, MSU gradients, the unchanged Milestone-4 state dict when MSU
+is off, the Branch A, Branch B and hybrid overfit-one-batch checks,
+parameter-group coverage, and an end-to-end `--smoke` run for each branch layout,
+including `exp005`, `exp006` and `exp007`. No test downloads pretrained weights:
+every test passes `pretrained=False`. The albumentations augmentation test is
+skipped when albumentations is not installed; everything else runs with torch +
+Pillow + YAML only.
 
 ## Running on Colab
 
@@ -231,13 +236,15 @@ Parameter counts with random weights (no download): the ConvNeXt-Base baseline
 is **97.22 M** (87.56 M encoder + 9.66 M head); the CAFormer-S18 branch is
 **32.55 M** (23.24 M encoder + 9.31 M head). The dual hybrid model (`exp005`) is
 **122.68 M** before MSU, and the all-concat ablation (`exp006`) is **127.78 M**.
-A real `exp003` or `exp005` run downloads the pinned `sail_in1k` weights through
-timm; `exp004` is the from-scratch extra baseline. These are parameter counts,
-not memory measurements: no VRAM number is claimed.
+The two MSU links add **0.086 M** (86,016 parameters), so the hybrid + MSU model
+(`exp007`) is **122.76 M** in total. A real `exp003`, `exp005` or `exp007` run
+downloads the pinned `sail_in1k` weights through timm; `exp004` is the
+from-scratch extra baseline. These are parameter counts, not memory
+measurements: no VRAM number is claimed.
 
 ## Roadmap
 
-Milestones 1-4 are complete. Milestone 5 (MSU links on and off) is next, then
-evaluation, ablations and the final README; Milestones 5-7 still need explicit
-approval. The thin Colab launcher (`notebooks/colab_run.ipynb`) is already in
-place. See [PROGRESS.md](PROGRESS.md).
+Milestones 1-5 are complete. Milestone 6 (evaluation, results logging and the
+ablation configs) is next, then the final README; Milestones 6-7 still need
+explicit approval. The thin Colab launcher (`notebooks/colab_run.ipynb`) is
+already in place. See [PROGRESS.md](PROGRESS.md).

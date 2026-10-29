@@ -16,7 +16,7 @@ Last updated: 2026-10-29.
 - [x] 3. Meta-Polyp encoder alone with the same decoder.
 - [x] 4. Fusion: concat at stages 1 and 2, cross-attention at stages 3 and 4,
       plus the `all_concat` variant.
-- [ ] 5. MSU links on and off.
+- [x] 5. MSU links on and off.
 - [ ] 6. `evaluate.py`, results logging, and ablation configs for: A only,
       B only, all concat, hybrid fusion, hybrid fusion + MSU, hybrid fusion
       without MSU.
@@ -40,8 +40,8 @@ version:
   dual-branch fusion sets `model.encoder: dual` and runs both encoders.
 - Fusion presets: `hybrid` (concat S1-S2, xattn S3-S4), `all_concat`,
   `single_a`, `single_b`; an explicit four-stage list is also accepted.
-- MSU follows the paper (decoder 3 x4 -> decoder 1); `model.msu_mode:
-  paper | released`, only `paper` implemented.
+- MSU follows the paper: D4 x4 -> D2 and D3 x4 -> D1. `decoder.msu` defaults
+  false; `decoder.msu_mode: paper | released`, only `paper` implemented.
 - The Convformer skip block is omitted; `model.skip_convformer: false` is
   reserved and `true` raises `NotImplementedError`.
 - albumentations for training augmentation only; `metrics.csv` always written;
@@ -52,9 +52,9 @@ version:
 - Pretrained timm downloads are Colab-only; tests and smoke runs stay
   `pretrained: false`.
 - The upstream 880/120 split comparison is deferred, not cancelled.
-- Milestone 4 (fusion) is complete. Milestones 5-7 are still pending.
+- Milestone 5 (MSU) is complete. Milestones 6-7 are still pending.
 
-## Last session (2026-10-29)
+## Session 2026-10-29 (first session)
 
 - Read AGENTS.md and PROGRESS.md, then oriented the repo: one commit existed
   (Milestone 1). The working tree already carried uncommitted draft Milestone 2
@@ -307,4 +307,82 @@ counts, not VRAM measurements.
   on CPU; an explicit `pytest -q` run also passed and was double-quiet because
   `-q` is already configured. The notebook JSON parses and the edited pytest
   cell compiles.
+
+## Session 2026-10-29 (sixth session)
+
+### Step 1: Colab GPU test compatibility
+
+- Already complete at session start (commit `379aea8`), so it was not redone.
+  `tests/test_train.py` uses a device-aware peak-memory expectation (`0.0` on
+  CPU, `> 0` on CUDA) and checks both `run_info.json` and `metrics.csv`; the
+  notebook pytest cell warns on failure without blocking training.
+
+### Milestone 5: Multi-scale Upsampling (MSU)
+
+- Added `src/models/msu.py` with `MSULink` and `MSU`. Each link is a 1x1
+  `Conv2d` (no bias) that projects the source width, a x4 bilinear upsample, a
+  residual addition into the target decoder map, and ReLU after the addition.
+  Paper mode has exactly two links: Decoder 4 -> Decoder 2 and Decoder 3 ->
+  Decoder 1.
+- `PlainDecoder` now accepts `msu` and `msu_mode`. When `msu: false` no MSU
+  module is registered (`self.msu is None`), so the decoder state_dict is
+  unchanged from Milestone 4 (63 keys, test-pinned). When `msu: true`, the
+  D4->D2 link is applied before Decoder 1 is computed; otherwise the D4 link
+  would be dead because nothing downstream would read the updated D2. D3->D1 is
+  applied after Decoder 1.
+- `msu_mode: released` is accepted by config validation but `build_model` and
+  `PlainDecoder` raise `NotImplementedError` with a clear message. It was not
+  implemented in this milestone.
+- Config keys moved to the requested `decoder` section: `decoder.msu` (default
+  `false`) and `decoder.msu_mode: paper | released`. This replaces
+  `model.msu`/`model.msu_mode`; all repo configs were migrated, and
+  `configs/base.yaml` now defaults to `msu: false`. Added
+  `configs/exp007_hybrid_msu.yaml` (hybrid fusion, MSU on, paper mode, both
+  encoders pretrained).
+- `src/train.py` smoke mode now preserves the configured MSU setting instead of
+  forcing it off, so the `exp007` smoke run exercises the real MSU path.
+  `run_info.json` and `config_resolved.yaml` record `msu` and `msu_mode`.
+- `src/utils.py` validates the new `decoder` section; unknown keys still fail.
+  `msu_mode: released` passes validation and is rejected by the model builder.
+- Optional GroupNorm was not added. BatchNorm remains in `ChannelAlignment`,
+  `ConcatFusion` (stages 1-2), every decoder `ConvBlock`, and the decoder head
+  norm; cross-attention uses LayerNorm. GroupNorm can be added as a separate
+  config change later if wanted.
+
+### Parameter counts (CPU, random weights, no download)
+
+| Component | Parameters |
+|---|---:|
+| MSU links (512x128 + 320x64 1x1 convs) | 86,016 (0.086 M) |
+| `exp005` hybrid, MSU off | 122.677553 M |
+| `exp007` hybrid, MSU on | 122.763569 M |
+
+The increase is exactly the two MSU links: 86,016 parameters. These are
+parameter counts, not VRAM measurements.
+
+### Tests and smoke runs
+
+- `pytest`: **211 passed in 87.76 s** on CPU (12 new tests versus the previous
+  199). New coverage: MSU link shapes; D4->D2 and D3->D1 information flow with
+  the main path zeroed; a decoder-level check that the D4 link is not dead;
+  exact Milestone-4 decoder state_dict keys with `msu: false`; MSU parameter
+  count and model parameter increase; gradients reaching both links and the
+  encoder; full-net output shapes for all four fusion presets with MSU on and
+  off; `released` rejection; and `exp007` end-to-end smoke.
+- `python -m src.train --config configs/exp007_hybrid_msu.yaml --smoke
+  --out-dir /tmp/opencode/exp007_msu_smoke` passed on CPU (3 steps, 64 px,
+  synthetic data). It reported `model: dual (convnext_tiny.fb_in1k +
+  caformer_s18.sail_in1k)  params: 62.84M`, `msu: true`, `msu_mode: paper`.
+  Synthetic val Dice `0.1980` is a pipeline check, not a result.
+- No pretrained weights were downloaded locally, no full training was run, and
+  no VRAM or real-data metric is claimed.
+
+### Open questions (current)
+
+- MSU adds only 86,016 parameters, but `exp007` still needs its own T4 memory
+  and epoch-time measurement; no VRAM number is claimed.
+- The first real T4 probe remains `exp001`, batch 8, then 4 and 2 with gradient
+  accumulation if needed.
+- Milestone 5 is complete. Milestones 6 (evaluation, results logging, ablation
+  configs) and 7 (final README) remain pending explicit approval.
 

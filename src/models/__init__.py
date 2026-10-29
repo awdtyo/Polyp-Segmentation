@@ -9,7 +9,8 @@ Filled in milestone order (AGENTS.md section 9):
   (milestone 5).
 * ``net.py`` - the assembled model (milestone 2 onwards).
 
-Milestones 1-4 are implemented: both single-branch baselines, channel alignment,
-per-stage concat/cross-attention fusion, the plain decoder and the assembled
-dual-branch model. MSU (milestone 5) is not implemented yet.
+Milestones 1-5 are implemented: both single-branch baselines, channel alignment,
+per-stage concat/cross-attention fusion, the U-Net decoder with optional
+paper-mode MSU, and the assembled dual-branch model. The released MSU variant
+and the Convformer skip block remain reserved and raise.
 """

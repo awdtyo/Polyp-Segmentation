@@ -48,11 +48,12 @@ def aligned_maps(batch: int = 2, size: int = 256, channels: tuple[int, ...] = CH
     return [torch.randn(batch, c, size // s, size // s) for c, s in zip(channels, STRIDES)]
 
 
-def make_dual_net(fusion: str | list[str]) -> PolypSegNet:
+def make_dual_net(fusion: str | list[str], msu: bool = False) -> PolypSegNet:
     """Build a small dual-encoder net with random weights.
 
     Args:
         fusion: Preset or per-stage list.
+        msu: Enable the paper-mode MSU links.
 
     Returns:
         A ConvNeXt-tiny + CAFormer-S18 net, in train mode.
@@ -62,6 +63,7 @@ def make_dual_net(fusion: str | list[str]) -> PolypSegNet:
         channels=CHANNELS,
         encoder_b=MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False),
         fusion=fusion,
+        msu=msu,
     )
 
 
@@ -173,13 +175,15 @@ def test_token_counts_at_256_are_256_and_64(encoder_factory: Callable[[], torch.
     assert (stage_3_tokens, stage_4_tokens) == (256, 64)
 
 
+@pytest.mark.parametrize("msu", [False, True], ids=["msu_off", "msu_on"])
 @pytest.mark.parametrize("preset", ["hybrid", "all_concat", "single_a", "single_b"])
-def test_full_net_returns_logits_at_256_for_every_preset(preset: str) -> None:
+def test_full_net_returns_logits_at_256_for_every_preset(preset: str, msu: bool) -> None:
     if preset == "single_a":
         net = PolypSegNet(
             encoder_a=ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False),
             channels=CHANNELS,
             fusion=preset,
+            msu=msu,
         )
     elif preset == "single_b":
         net = PolypSegNet(
@@ -187,9 +191,10 @@ def test_full_net_returns_logits_at_256_for_every_preset(preset: str) -> None:
             channels=CHANNELS,
             encoder_b=MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False),
             fusion=preset,
+            msu=msu,
         )
     else:
-        net = make_dual_net(preset)
+        net = make_dual_net(preset, msu=msu)
     net.eval()
 
     with torch.no_grad():
@@ -210,7 +215,6 @@ def test_single_modes_match_the_existing_baseline_shapes_and_parameter_counts() 
                     "encoder": "convnext",
                     "encoder_a": "convnext_tiny.fb_in1k",
                     "pretrained_a": False,
-                    "msu": False,
                 }
             },
         )
