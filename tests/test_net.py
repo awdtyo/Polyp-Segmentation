@@ -113,21 +113,39 @@ def test_msu_config_raises_until_milestone_5(baseline_cfg: dict) -> None:
         build_model(cfg)
 
 
-def test_hybrid_fusion_raises_until_milestone_4() -> None:
+def test_hybrid_fusion_builds_dual_branch() -> None:
     cfg = load_config(
         REPO_ROOT / "configs" / "base.yaml",
-        overrides={"model": {"pretrained_a": False, "msu": False}},
+        overrides={
+            "model": {
+                "encoder": "dual",
+                "encoder_a": "convnext_tiny.fb_in1k",
+                "pretrained_a": False,
+                "pretrained_b": False,
+                "msu": False,
+            }
+        },
     )
-    with pytest.raises(NotImplementedError, match="Milestone 4"):
-        build_model(cfg)
+    net = build_model(cfg).eval()
+
+    assert net.branch == "dual"
+    assert net.encoder_a is not None
+    assert net.encoder_b is not None
+    assert net.align_a is not None
+    assert net.align_b is not None
+    assert net.fusion_stack is not None
+    assert net.fusion == ["concat", "concat", "xattn", "xattn"]
+    with torch.no_grad():
+        out = net(torch.zeros(1, 3, 64, 64))
+    assert out.shape == (1, 1, 64, 64)
 
 
-def test_single_b_with_convnext_encoder_raises_until_milestone_4() -> None:
+def test_single_b_with_convnext_encoder_is_rejected() -> None:
     cfg = load_config(
         BASELINE,
         overrides={"model": {"pretrained_a": False, "fusion": "single_b"}},
     )
-    with pytest.raises(NotImplementedError, match="Milestone 4|single_a"):
+    with pytest.raises(ValueError, match="inconsistent|single_b"):
         build_model(cfg)
 
 

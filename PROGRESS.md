@@ -14,7 +14,7 @@ Last updated: 2026-10-29.
 - [x] 2. Baseline: ConvNeXt encoder + plain decoder (no fusion, no MSU),
       `train.py` with checkpoint and resume, `--smoke` run passes.
 - [x] 3. Meta-Polyp encoder alone with the same decoder.
-- [ ] 4. Fusion: concat at stages 1 and 2, cross-attention at stages 3 and 4,
+- [x] 4. Fusion: concat at stages 1 and 2, cross-attention at stages 3 and 4,
       plus the `all_concat` variant.
 - [ ] 5. MSU links on and off.
 - [ ] 6. `evaluate.py`, results logging, and ablation configs for: A only,
@@ -37,7 +37,9 @@ version:
   config.
 - Branch B: `caformer_s18.sail_in1k`. No TensorFlow -> PyTorch weight remap.
 - One branch per baseline: `model.encoder: convnext | caformer` selects it;
-  dual-branch fusion is Milestone 4.
+  dual-branch fusion sets `model.encoder: dual` and runs both encoders.
+- Fusion presets: `hybrid` (concat S1-S2, xattn S3-S4), `all_concat`,
+  `single_a`, `single_b`; an explicit four-stage list is also accepted.
 - MSU follows the paper (decoder 3 x4 -> decoder 1); `model.msu_mode:
   paper | released`, only `paper` implemented.
 - The Convformer skip block is omitted; `model.skip_convformer: false` is
@@ -50,7 +52,7 @@ version:
 - Pretrained timm downloads are Colab-only; tests and smoke runs stay
   `pretrained: false`.
 - The upstream 880/120 split comparison is deferred, not cancelled.
-- Milestone 4 (fusion) is approved. Milestones 5-7 are still pending.
+- Milestone 4 (fusion) is complete. Milestones 5-7 are still pending.
 
 ## Last session (2026-10-29)
 
@@ -191,16 +193,93 @@ result. No VRAM number is claimed until it is measured.
   (meaningless pipeline check, not a result).
 - No pretrained weights were downloaded and no real training was run.
 
+## Session 2026-10-29 (fourth session)
+
+### Step 0 decisions
+
+- Recorded the first-T4-probe policy (`exp001`, batch 8, fallback 4 then 2 with
+  gradient accumulation), Colab-only pretrained downloads, the deferred
+  upstream 880/120 comparison, and the Milestone 4 approval in AGENTS.md
+  section 11 and this file. Committed as `38393b6` and pushed to `origin/main`.
+
+### Milestone 4: dual-encoder fusion
+
+- Added `src/models/fusion.py`:
+  - `ConcatFusion`: concat on channels, 3x3 conv + BatchNorm + ReLU back to
+    `C_i`.
+  - `CrossAttentionFusion`: flatten to `(B, H*W, C_i)`, ConvNeXt query,
+    Meta-Polyp key/value, `nn.MultiheadAttention(8, batch_first=True)`,
+    residual add to the query, LayerNorm, reshape. Optional fixed 2-D
+    sinusoidal encoding is implemented and tested; it is off in `exp005` and
+    `exp006`.
+  - `resolve_fusion_modes` accepts the `hybrid`, `all_concat`, `single_a` and
+    `single_b` presets, repeated `concat`/`xattn`, or an explicit four-stage
+    list. `FusionStack` rejects single-branch modes because the model assembly
+    skips the unused encoder instead.
+- `src/models/net.py` now assembles the dual model when
+  `model.encoder: dual`: both encoders run on the same input, each stage is
+  aligned twice, fused, then decoded by the existing `PlainDecoder`. The
+  `single_a`/`single_b` presets still skip the other encoder and keep the
+  Milestone 2-3 baselines unchanged (parameter counts match the old baselines).
+  `fusion_heads` and `pos_enc_2d` are read from the config.
+- Parameter groups stay `encoder_a`, `encoder_b`, `head`; `head` now contains
+  alignment, fusion, decoder and the segmentation head. All three LRs are
+  logged in `metrics.csv`.
+- Added `configs/exp005_hybrid_fusion.yaml` (`fusion: hybrid`) and
+  `configs/exp006_all_concat.yaml` (`fusion: all_concat`). Both use the pinned
+  pretrained encoders, `image_size: 256`, batch 8 and `msu: false`.
+- `src/train.py` smoke mode preserves the configured branch layout and fusion
+  preset instead of forcing a single branch, so `exp005`/`exp006` smoke tests
+  exercise the real dual path. `run_info.json` records `encoder: dual`, both
+  encoder names, and the resolved per-stage fusion list.
+- `src/utils.py` accepts `model.encoder: dual`, validates `fusion_heads`, and
+  rejects preset names inside a per-stage list.
+
+### Parameter counts (CPU, random weights, no download)
+
+| Component | exp005 hybrid | exp006 all_concat |
+|---|---:|---:|
+| Encoder A (ConvNeXt-Base) | 87.564 M | 87.564 M |
+| Encoder B (CAFormer-S18) | 23.237 M | 23.237 M |
+| Alignment A | 0.731 M | 0.731 M |
+| Alignment B | 0.387 M | 0.387 M |
+| Fusion (S1-S4) | 1.832 M | 6.932 M |
+| Decoder + head | 8.926 M | 8.926 M |
+| **Total** | **122.678 M** | **127.778 M** |
+
+Fusion by stage, hybrid: 0.074 / 0.295 / 0.412 / 1.052 M (concat, concat,
+xattn, xattn). All-concat: 0.074 / 0.295 / 1.844 / 4.720 M. These are parameter
+counts, not VRAM measurements.
+
+### Tests and smoke runs
+
+- `pytest -q`: **199 passed** in 77.44 s on CPU. No test downloads weights.
+  New coverage: fusion preset parsing and rejection of invalid lists; concat
+  and cross-attention shapes at 256 px; cross-attention output changes when
+  either branch input changes; stage-3/stage-4 token counts are 256/64; full
+  net output for all four presets at `(2, 3, 256, 256)`; single modes match the
+  old baseline parameter counts; dual parameter groups; dual optimizer LRs;
+  positional-encoding behavior; hybrid overfit-one-batch; and `--smoke` for
+  both `exp005` and `exp006`.
+- Standalone CPU smoke runs passed for `exp005` and `exp006`:
+  `model: dual (convnext_tiny.fb_in1k + caformer_s18.sail_in1k)` with 62.75 M
+  and 67.85 M smoke parameters respectively. Synthetic val Dice was `0.0000`
+  in both; that is a pipeline check, not a result. No epoch time or VRAM number
+  from these CPU runs is reported as a measurement.
+- No pretrained weights were downloaded locally, no full training was run, and
+  no VRAM or real-data metric is claimed.
+
 ### Open questions (current)
 
 - Does ConvNeXt-Base at 256x256 fit the free T4? The first probe uses
   `exp001` with batch size 8, then 4, then 2 with gradient accumulation; it
   must measure peak VRAM and epoch time. Nothing is claimed until measured.
-- Before the first real Branch B run, confirm that downloading the pinned
-  `caformer_s18.sail_in1k` ImageNet weights is allowed. Downloads are now
-  approved on Colab only; nothing has been downloaded locally.
+- The dual hybrid model has 122.68 M parameters before MSU. It needs its own
+  T4 memory measurement after the `exp001` probe; no VRAM number is claimed
+  from the CPU parameter count.
+- Downloads of the pinned `caformer_s18.sail_in1k` weights are approved on
+  Colab only. Nothing has been downloaded locally.
 - The upstream 880/120 split comparison remains optional and separate from the
   committed 800/100/100 development split. It is deferred, not cancelled.
-- Milestone 4 (fusion) is approved. Milestones 5-7 remain pending explicit
-  approval.
+- Milestone 4 is complete. Milestones 5-7 remain pending explicit approval.
 

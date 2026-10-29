@@ -42,6 +42,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG = REPO_ROOT / "configs" / "base.yaml"
 BASELINE_CONFIG = REPO_ROOT / "configs" / "exp001_convnext_base_baseline.yaml"
 CAFORMER_CONFIG = REPO_ROOT / "configs" / "exp003_caformer_s18_baseline.yaml"
+HYBRID_CONFIG = REPO_ROOT / "configs" / "exp005_hybrid_fusion.yaml"
+ALL_CONCAT_CONFIG = REPO_ROOT / "configs" / "exp006_all_concat.yaml"
 
 
 def tiny_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -54,6 +56,7 @@ def tiny_config(model_overrides: Mapping[str, Any] | None = None) -> dict[str, A
         Resolved config (no fusion, no MSU, nothing pretrained).
     """
     model: dict[str, Any] = {
+        "encoder": "convnext",
         "encoder_a": "convnext_tiny.fb_in1k",
         "pretrained_a": False,
         "pretrained_b": False,
@@ -149,6 +152,27 @@ def test_branch_b_optimizer_uses_the_encoder_b_learning_rate() -> None:
     assert "encoder_a" not in rates
     assert rates["head"] == pytest.approx(cfg["train"]["lr_head"])
     assert get_learning_rates(optimizer)["encoder_a"] == 0.0
+
+
+def test_dual_optimizer_uses_both_encoder_and_head_learning_rates() -> None:
+    cfg = load_config(
+        HYBRID_CONFIG,
+        overrides={"model": {"pretrained_a": False, "pretrained_b": False}},
+    )
+    cfg["model"]["encoder_a"] = "convnext_tiny.fb_in1k"
+    model = build_model(cfg)
+    optimizer = build_optimizer(model, cfg)
+
+    rates = {group["name"]: group["lr"] for group in optimizer.param_groups}
+    assert rates["encoder_a"] == pytest.approx(cfg["train"]["lr_convnext"])
+    assert rates["encoder_b"] == pytest.approx(cfg["train"]["lr_encoder_b"])
+    assert rates["head"] == pytest.approx(cfg["train"]["lr_head"])
+    logged = get_learning_rates(optimizer)
+    assert logged["encoder_a"] == pytest.approx(cfg["train"]["lr_convnext"])
+    assert logged["encoder_b"] == pytest.approx(cfg["train"]["lr_encoder_b"])
+    assert logged["head"] == pytest.approx(cfg["train"]["lr_head"])
+    seen = [id(param) for group in optimizer.param_groups for param in group["params"]]
+    assert set(seen) == {id(param) for param in model.parameters()}
 
 
 def test_scheduler_warms_up_then_anneals_to_zero() -> None:
@@ -411,6 +435,55 @@ def test_caformer_smoke_run_end_to_end(
     assert info["model"]["fusion"] == ["single_b"] * 4
     assert info["model"]["msu"] is False
     assert "caformer" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("config_path", "run_name", "expected_fusion"),
+    [
+        (HYBRID_CONFIG, "exp005_hybrid_fusion_smoke", ["concat", "concat", "xattn", "xattn"]),
+        (ALL_CONCAT_CONFIG, "exp006_all_concat_smoke", ["concat"] * 4),
+    ],
+)
+def test_dual_fusion_smoke_run_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    config_path: Path,
+    run_name: str,
+    expected_fusion: list[str],
+) -> None:
+    """Both Milestone 4 configs must smoke-test the real dual fusion path."""
+    monkeypatch.chdir(tmp_path)
+    out_root = tmp_path / "runs"
+
+    exit_code = train_mod.main(["--config", str(config_path), "--smoke", "--out-dir", str(out_root)])
+
+    assert exit_code == 0
+    run_dir = out_root / run_name
+    for name in ("config_resolved.yaml", "run_info.json", "metrics.csv", "last.pt", "best.pt"):
+        assert (run_dir / name).is_file(), f"missing {name}"
+
+    info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
+    assert info["model"]["encoder"] == "dual"
+    assert info["model"]["encoder_a"] == "convnext_tiny.fb_in1k"
+    assert info["model"]["encoder_b"] == "caformer_s18.sail_in1k"
+    assert info["model"]["pretrained_a"] is False
+    assert info["model"]["pretrained_b"] is False
+    assert info["model"]["fusion"] == expected_fusion
+    assert info["model"]["msu"] is False
+    assert info["params_total"] > 0
+    assert info["image_size"] == 64
+
+    rows = (run_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()
+    header = rows[0].split(",")
+    first_epoch = dict(zip(header, rows[1].split(",")))
+    assert float(first_epoch["lr_encoder_a"]) > 0
+    assert float(first_epoch["lr_encoder_b"]) > 0
+    assert float(first_epoch["lr_head"]) > 0
+
+    output = capsys.readouterr().out
+    assert "model: dual" in output
+    assert "caformer_s18.sail_in1k" in output
 
 
 def test_real_run_resumes_from_last_checkpoint(

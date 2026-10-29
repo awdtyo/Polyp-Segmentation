@@ -43,6 +43,7 @@ def baseline_config(model_overrides: Mapping[str, Any] | None = None) -> dict[st
         Resolved config with a tiny, randomly initialised ConvNeXt and no fusion/MSU.
     """
     model: dict[str, Any] = {
+        "encoder": "convnext",
         "encoder_a": "convnext_tiny.fb_in1k",
         "pretrained_a": False,
         "pretrained_b": False,
@@ -62,7 +63,11 @@ def caformer_config(model_overrides: Mapping[str, Any] | None = None) -> dict[st
     Returns:
         Resolved config with caformer_s18, ``single_b`` fusion and no MSU.
     """
-    model: dict[str, Any] = {"pretrained_b": False, "pretrained_a": False}
+    model: dict[str, Any] = {
+        "encoder": "caformer",
+        "pretrained_b": False,
+        "pretrained_a": False,
+    }
     model.update(dict(model_overrides or {}))
     return load_config(CAFORMER_BASELINE, overrides={"model": model})
 
@@ -226,8 +231,6 @@ def test_count_parameters_is_positive_and_trainable_matches() -> None:
     ("overrides", "message"),
     [
         ({"msu": True}, "Milestone 5"),
-        ({"fusion": ["concat"] * 4}, "Milestone 4"),
-        ({"fusion": "single_b"}, "single_a"),
         ({"skip_convformer": True}, "skip_convformer"),
     ],
 )
@@ -236,11 +239,16 @@ def test_build_model_refuses_unimplemented_parts(overrides: Mapping[str, Any], m
         build_model(baseline_config(overrides))
 
 
-def test_net_rejects_more_than_one_encoder() -> None:
+def test_build_model_rejects_encoder_fusion_mismatch() -> None:
+    with pytest.raises(ValueError, match="inconsistent"):
+        build_model(baseline_config({"fusion": "single_b"}))
+
+
+def test_net_rejects_more_than_one_encoder_in_single_mode() -> None:
     encoder = ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False)
 
-    with pytest.raises(NotImplementedError, match="Milestone 4"):
-        PolypSegNet(encoder, channels=(8, 16, 32, 64), encoder_b=encoder)
+    with pytest.raises(ValueError, match="single_a"):
+        PolypSegNet(encoder, channels=(8, 16, 32, 64), encoder_b=encoder, fusion="single_a")
 
 
 def test_overfit_one_batch() -> None:
@@ -284,6 +292,35 @@ def test_overfit_one_batch_branch_b() -> None:
         channels=(64, 128, 320, 512),
         encoder_b=MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False),
         fusion="single_b",
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
+    loss_fn = build_loss({"train": {"loss": "bce_dice", "bce_weight": 1.0, "dice_weight": 1.0}})
+
+    generator = torch.Generator().manual_seed(1)
+    images = torch.randn(2, 3, 64, 64, generator=generator)
+    masks = torch.zeros(2, 1, 64, 64)
+    masks[:, :, 16:48, 20:44] = 1.0
+
+    losses: list[float] = []
+    for _ in range(40):
+        optimizer.zero_grad(set_to_none=True)
+        loss = loss_fn(model(images), masks)
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+
+    assert losses[-1] < 0.35 * losses[0], f"loss did not fall enough: {losses[0]:.3f} -> {losses[-1]:.3f}"
+    assert losses[-1] < 0.6, f"final loss {losses[-1]:.3f} is too high for one batch"
+
+
+def test_overfit_one_batch_hybrid_fusion() -> None:
+    """Both encoders and the fusion path must overfit one batch together."""
+    torch.manual_seed(0)
+    model = PolypSegNet(
+        encoder_a=ConvNeXtEncoder("convnext_tiny.fb_in1k", pretrained=False),
+        channels=(16, 32, 64, 128),
+        encoder_b=MetaPolypEncoder("caformer_s18.sail_in1k", pretrained=False),
+        fusion="hybrid",
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
     loss_fn = build_loss({"train": {"loss": "bce_dice", "bce_weight": 1.0, "dice_weight": 1.0}})

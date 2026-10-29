@@ -7,10 +7,10 @@ Usage:
 Resume is automatic: if ``<out_dir>/<run_name>/last.pt`` exists the run continues
 from it. ``--no-resume`` starts fresh. ``--smoke`` shrinks everything (64 px,
 2 images per batch, 3 optimiser steps, synthetic data in the run folder, no
-pretrained download) to prove the pipeline runs end to end on CPU. The active
-branch is still the one named by the config (ConvNeXt-tiny for Branch A,
-caformer_s18 for Branch B). Smoke numbers are not results and are never
-comparable to a real run.
+pretrained download) to prove the pipeline runs end to end on CPU. The config's
+branch layout and fusion preset are preserved, so the dual-encoder configs smoke
+test both encoders and the real concat/cross-attention path. Smoke numbers are
+not results and are never comparable to a real run.
 
 Never run full training on the CPU dev box: only ``--smoke`` is allowed there.
 """
@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader
 from src.datasets import PolypDataset, build_train_transform
 from src.losses import build_loss
 from src.metrics import SegMetrics
+from src.models.fusion import resolve_fusion_modes
 from src.models.net import build_model, count_parameters
 from src.utils import ConfigError, load_config, save_config, set_seed
 
@@ -89,8 +90,9 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
 
     Returns:
         A modified deep copy: 1 epoch, 64 px, batch 2, 3 steps, no pretrained
-        download, no W&B, no workers, and the config's active branch only
-        (ConvNeXt-tiny for Branch A, caformer_s18 for Branch B).
+        download, no W&B, no workers. The config's branch layout and fusion
+        preset are preserved, so a dual-encoder config still exercises both
+        encoders and the real fusion path in the smoke run.
     """
     smoke = copy.deepcopy(dict(cfg))
     smoke["run"]["name"] = f"{smoke['run']['name']}_smoke"
@@ -98,16 +100,14 @@ def apply_smoke_overrides(cfg: Mapping[str, Any]) -> dict[str, Any]:
     smoke["data"].update(
         {"image_size": 64, "num_workers": 0, "pin_memory": False, "cache_path": ""}
     )
-    encoder_kind = str(smoke["model"].get("encoder", "convnext"))
-    branch_mode = "single_b" if encoder_kind == "caformer" else "single_a"
-    # encoder_a is unused in the Branch B smoke test, but keeping a tiny name makes
-    # the smoke config harmless if someone inspects it. Branch B keeps caformer_s18
-    # so the real Meta-Polyp path is the one under test.
-    smoke["model"].update({"encoder_a": "convnext_tiny.fb_in1k", "pretrained_a": False})
+    # encoder_a is tiny in every smoke run, including the Branch B one where it
+    # is unused, so the smoke config is harmless if someone inspects it. Branch B
+    # keeps caformer_s18 so the real Meta-Polyp path is the one under test.
     smoke["model"].update(
         {
+            "encoder_a": "convnext_tiny.fb_in1k",
+            "pretrained_a": False,
             "pretrained_b": False,
-            "fusion": [branch_mode] * 4,
             "msu": False,
             "skip_convformer": False,
         }
@@ -791,15 +791,19 @@ def write_run_info(
         },
         "model": {
             "encoder": cfg["model"]["encoder"],
-            "encoder_a": cfg["model"]["encoder_a"] if cfg["model"]["encoder"] == "convnext" else None,
-            "encoder_b": cfg["model"]["encoder_b"] if cfg["model"]["encoder"] == "caformer" else None,
+            "encoder_a": (
+                cfg["model"]["encoder_a"]
+                if cfg["model"]["encoder"] in {"convnext", "dual"}
+                else None
+            ),
+            "encoder_b": (
+                cfg["model"]["encoder_b"]
+                if cfg["model"]["encoder"] in {"caformer", "dual"}
+                else None
+            ),
             "pretrained_a": bool(cfg["model"]["pretrained_a"]),
             "pretrained_b": bool(cfg["model"]["pretrained_b"]),
-            "fusion": (
-                [str(cfg["model"]["fusion"])] * 4
-                if isinstance(cfg["model"]["fusion"], str)
-                else list(cfg["model"]["fusion"])
-            ),
+            "fusion": resolve_fusion_modes(cfg["model"]["fusion"]),
             "msu": bool(cfg["model"]["msu"]),
             "msu_mode": cfg["model"]["msu_mode"],
             "skip_convformer": bool(cfg["model"]["skip_convformer"]),
@@ -977,12 +981,15 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     model = build_model(cfg).to(device)
     total, trainable = count_parameters(model)
-    active_encoder = str(cfg["model"]["encoder"])
-    encoder_name = (
-        cfg["model"]["encoder_b"] if active_encoder == "caformer" else cfg["model"]["encoder_a"]
-    )
+    encoder_kind = str(cfg["model"]["encoder"])
+    if encoder_kind == "dual":
+        encoder_text = f"{cfg['model']['encoder_a']} + {cfg['model']['encoder_b']}"
+    elif encoder_kind == "caformer":
+        encoder_text = str(cfg["model"]["encoder_b"])
+    else:
+        encoder_text = str(cfg["model"]["encoder_a"])
     print(
-        f"model: {active_encoder} ({encoder_name})  "
+        f"model: {encoder_kind} ({encoder_text})  "
         f"params: {total/1e6:.2f}M ({trainable/1e6:.2f}M trainable)"
     )
 

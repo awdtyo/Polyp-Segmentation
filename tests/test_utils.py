@@ -35,7 +35,7 @@ def test_base_config_loads_with_expected_values() -> None:
     assert cfg["run"]["name"] == "exp000_base"
     assert cfg["run"]["seed"] == 42
     assert cfg["data"]["image_size"] == 256
-    assert cfg["model"]["encoder"] == "convnext"
+    assert cfg["model"]["encoder"] == "dual"
     assert cfg["model"]["fusion"] == ["concat", "concat", "xattn", "xattn"]
     assert cfg["model"]["channels"] == [64, 128, 320, 512]
     assert cfg["train"]["loss"] == "bce_dice"
@@ -116,6 +116,26 @@ def test_fusion_single_string_mode_is_allowed(tmp_path: Path) -> None:
     assert cfg["model"]["fusion"] == "all_concat"
 
 
+def test_fusion_hybrid_preset_is_allowed(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "exp.yaml", {"model": {"fusion": "hybrid"}})
+    cfg = utils.load_config(path)
+    assert cfg["model"]["fusion"] == "hybrid"
+
+
+def test_fusion_preset_name_is_not_a_stage_entry(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path / "exp.yaml", {"model": {"fusion": ["hybrid", "concat", "xattn", "xattn"]}}
+    )
+    with pytest.raises(utils.ConfigError, match="entry 'hybrid'"):
+        utils.load_config(path)
+
+
+def test_fusion_heads_must_be_positive(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "exp.yaml", {"model": {"fusion_heads": 0}})
+    with pytest.raises(utils.ConfigError, match="fusion_heads"):
+        utils.load_config(path)
+
+
 def test_encoder_must_be_known(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "exp.yaml", {"model": {"encoder": "swin"}})
     with pytest.raises(utils.ConfigError, match="model.encoder"):
@@ -137,6 +157,26 @@ def test_branch_b_configs_are_pinned_and_consistent() -> None:
     assert pretrained["train"]["lr_encoder_b"] == pytest.approx(1e-4)
     assert scratch["model"]["pretrained_b"] is False
     assert scratch["train"]["lr_encoder_b"] == pytest.approx(3e-4)
+
+
+def test_dual_branch_configs_are_pinned_and_consistent() -> None:
+    hybrid = utils.load_config(REPO_ROOT / "configs" / "exp005_hybrid_fusion.yaml")
+    all_concat = utils.load_config(REPO_ROOT / "configs" / "exp006_all_concat.yaml")
+
+    for cfg in (hybrid, all_concat):
+        assert cfg["model"]["encoder"] == "dual"
+        assert cfg["model"]["encoder_a"] == "convnext_base.fb_in1k"
+        assert cfg["model"]["encoder_b"] == "caformer_s18.sail_in1k"
+        assert cfg["model"]["pretrained_a"] is True
+        assert cfg["model"]["pretrained_b"] is True
+        assert cfg["model"]["msu"] is False
+        assert cfg["model"]["channels"] == [64, 128, 320, 512]
+        assert cfg["train"]["lr_convnext"] == pytest.approx(3e-5)
+        assert cfg["train"]["lr_encoder_b"] == pytest.approx(1e-4)
+        assert cfg["train"]["lr_head"] == pytest.approx(3e-4)
+
+    assert hybrid["model"]["fusion"] == "hybrid"
+    assert all_concat["model"]["fusion"] == "all_concat"
 
 
 def test_unknown_loss_raises(tmp_path: Path) -> None:

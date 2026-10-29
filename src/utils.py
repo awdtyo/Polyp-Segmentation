@@ -24,10 +24,18 @@ import yaml
 IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
 IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
 
-#: Fusion modes accepted per stage (AGENTS.md section 3.3).
+#: Fusion settings accepted by ``model.fusion``: per-stage modes, the
+#: ``hybrid`` preset, and the single-branch presets (AGENTS.md section 3.3).
 FUSION_MODES: frozenset[str] = frozenset(
-    {"concat", "xattn", "all_concat", "single_a", "single_b"}
+    {"concat", "xattn", "hybrid", "all_concat", "single_a", "single_b"}
 )
+#: Modes allowed inside the four-entry ``model.fusion`` list. Preset names are
+#: only valid as a single string, not as a stage entry.
+STAGE_FUSION_MODES: frozenset[str] = frozenset(
+    {"concat", "xattn", "single_a", "single_b"}
+)
+#: Encoder choices accepted by ``model.encoder``.
+ENCODER_KINDS: frozenset[str] = frozenset({"convnext", "caformer", "dual"})
 
 #: Loss names accepted by :func:`src.losses.build_loss`.
 LOSS_NAMES: frozenset[str] = frozenset({"bce_dice", "dice", "jaccard", "bce"})
@@ -87,14 +95,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "channels_last": False,
     },
     "model": {
-        "encoder": "convnext",
+        "encoder": "dual",
         "encoder_a": "convnext_base.fb_in1k",
         "encoder_b": "caformer_s18.sail_in1k",
         "pretrained_a": True,
         "pretrained_b": True,
         # Fused widths, default to the Meta-Polyp stage widths.
         "channels": [64, 128, 320, 512],
-        # Per-stage fusion type for stages 1..4 (strides 4, 8, 16, 32).
+        # Per-stage fusion type for stages 1..4 (strides 4, 8, 16, 32), or one
+        # of the presets: hybrid, all_concat, single_a, single_b.
         "fusion": ["concat", "concat", "xattn", "xattn"],
         "fusion_heads": 8,
         "pos_enc_2d": False,
@@ -235,9 +244,9 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         problems.append(f"train.loss must be one of {sorted(LOSS_NAMES)}, got {train['loss']!r}")
 
     model = cfg["model"]
-    if model["encoder"] not in {"convnext", "caformer"}:
+    if model["encoder"] not in ENCODER_KINDS:
         problems.append(
-            f"model.encoder must be 'convnext' or 'caformer', got {model['encoder']!r}"
+            f"model.encoder must be one of {sorted(ENCODER_KINDS)}, got {model['encoder']!r}"
         )
     fusion = model["fusion"]
     if isinstance(fusion, str):
@@ -247,8 +256,10 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         if len(fusion) != 4:
             problems.append(f"model.fusion list must have 4 entries (stages 1-4), got {len(fusion)}")
         for mode in fusion:
-            if mode not in FUSION_MODES:
-                problems.append(f"model.fusion entry {mode!r} not in {sorted(FUSION_MODES)}")
+            if mode not in STAGE_FUSION_MODES:
+                problems.append(
+                    f"model.fusion entry {mode!r} not in {sorted(STAGE_FUSION_MODES)}"
+                )
     else:
         problems.append("model.fusion must be a string or a list of 4 strings")
     channels = model["channels"]
@@ -256,6 +267,10 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         problems.append("model.channels must be a list of 4 ints")
     elif any(not isinstance(c, int) or c <= 0 for c in channels):
         problems.append(f"model.channels must be 4 positive ints, got {list(channels)}")
+    if not isinstance(model["fusion_heads"], int) or model["fusion_heads"] <= 0:
+        problems.append(
+            f"model.fusion_heads must be a positive int, got {model['fusion_heads']!r}"
+        )
     for key in ("encoder_a", "encoder_b"):
         if not isinstance(model[key], str) or not model[key].strip():
             problems.append(f"model.{key} must be a non-empty timm model name")
