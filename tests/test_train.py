@@ -7,6 +7,7 @@ no full training.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -179,9 +180,19 @@ def test_metrics_csv_rejects_missing_columns(tmp_path: Path) -> None:
         append_metrics_row(tmp_path / "metrics.csv", {"epoch": 0})
 
 
+def test_metrics_csv_rejects_an_incompatible_header(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.csv"
+    path.write_text("epoch,val_dice\n0,0.5\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="incompatible header"):
+        append_metrics_row(path, {column: 0 for column in METRICS_COLUMNS})
+
+
 def test_run_info_records_provenance(tmp_path: Path) -> None:
     cfg = tiny_config()
     cfg["data"]["synthetic"] = True
+    cache = tmp_path / "cache.npz"
+    cache.write_bytes(b"synthetic-cache-bytes")
+    cfg["data"]["cache_path"] = str(cache)
     model = build_model(cfg)
 
     info = write_run_info(
@@ -199,6 +210,8 @@ def test_run_info_records_provenance(tmp_path: Path) -> None:
     assert info["params_trainable"] == info["params_total"]
     assert "git_commit" in info and "git_dirty" in info
     assert info["data_root"] == "data/raw"
+    assert info["data_format"]["cache_path"] == str(cache)
+    assert info["data_format"]["cache_sha256"] == hashlib.sha256(b"synthetic-cache-bytes").hexdigest()
 
 
 def _train_step(model: nn.Module, batch: Mapping[str, Any], loss_fn: nn.Module, optimizer: Any, scaler: Any) -> float:
@@ -333,21 +346,29 @@ def test_build_dataloaders_uses_the_configured_cache(tmp_path: Path) -> None:
 
 def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.chdir(tmp_path)
+    out_root = tmp_path / "colab_runs"
 
-    exit_code = train_mod.main(["--config", str(BASELINE_CONFIG), "--smoke"])
+    exit_code = train_mod.main(
+        ["--config", str(BASELINE_CONFIG), "--smoke", "--out-dir", str(out_root)]
+    )
 
     assert exit_code == 0
-    run_dir = tmp_path / "runs" / "exp001_convnext_base_baseline_smoke"
+    run_dir = out_root / "exp001_convnext_base_baseline_smoke"
     for name in ("config_resolved.yaml", "run_info.json", "metrics.csv", "last.pt", "best.pt"):
         assert (run_dir / name).is_file(), f"missing {name}"
     rows = (run_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()
     assert rows[0].split(",") == list(METRICS_COLUMNS)
+    assert "peak_gpu_mem_mb" in rows[0].split(",")
     assert len(rows) == 2, "one epoch must write exactly one row"
 
     info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
     assert info["synth_data"] is True
     assert info["model"]["fusion"] == ["single_a"] * 4
     assert info["model"]["msu"] is False
+    assert info["peak_gpu_mem_mb"] == 0.0
+    assert info["epochs_this_session"] == 1
+    assert info["mean_epoch_time_s"] is not None and info["mean_epoch_time_s"] > 0
+    assert info["data_format"]["cache_sha256"] is None
     assert (run_dir / "preds" / "epoch_0000.png").is_file()
     assert "SMOKE MODE" in capsys.readouterr().out
 

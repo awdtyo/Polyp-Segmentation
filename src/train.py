@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import math
 import random
@@ -50,6 +51,7 @@ METRICS_COLUMNS: tuple[str, ...] = (
     "lr_encoder_a",
     "lr_encoder_b",
     "lr_head",
+    "peak_gpu_mem_mb",
     "epoch_time_s",
 )
 
@@ -68,6 +70,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--smoke", action="store_true", help="Tiny CPU run on synthetic data; proves the pipeline only.")
     parser.add_argument("--no-resume", action="store_true", help="Ignore an existing last.pt and start from scratch.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optimiser steps per epoch (smoke/debug).")
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Override run.out_dir, e.g. a Drive folder on Colab.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -647,6 +655,7 @@ def append_metrics_row(path: str | Path, row: Mapping[str, Any]) -> Path:
 
     Raises:
         KeyError: if a column is missing from ``row``.
+        ValueError: if an existing file has a different header (old run folder).
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -654,6 +663,14 @@ def append_metrics_row(path: str | Path, row: Mapping[str, Any]) -> Path:
     if missing:
         raise KeyError(f"metrics row missing columns: {missing}")
     write_header = not out.is_file() or out.stat().st_size == 0
+    if not write_header:
+        with out.open(newline="", encoding="utf-8") as handle:
+            existing_header = next(csv.reader(handle), [])
+        if existing_header != list(METRICS_COLUMNS):
+            raise ValueError(
+                f"{out} has an incompatible header {existing_header}; "
+                f"expected {list(METRICS_COLUMNS)}. Use a new run folder."
+            )
     with out.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(METRICS_COLUMNS))
         if write_header:
@@ -691,6 +708,23 @@ def _git_info(repo_dir: str | Path | None = None) -> dict[str, Any]:
     return {"git_commit": commit, "git_dirty": dirty}
 
 
+def _sha256_file(path: str | Path, chunk_size: int = 1 << 20) -> str:
+    """Return the SHA-256 hex digest of a file.
+
+    Args:
+        path: File to hash.
+        chunk_size: Read size in bytes (1 MiB default).
+
+    Returns:
+        Lower-case hexadecimal digest.
+    """
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def write_run_info(
     path: str | Path,
     cfg: Mapping[str, Any],
@@ -714,6 +748,8 @@ def write_run_info(
         The dict that was written.
     """
     total, trainable = count_parameters(model)
+    cache_path = cfg["data"].get("cache_path") or None
+    cache_sha256 = _sha256_file(cache_path) if cache_path and Path(cache_path).is_file() else None
     info: dict[str, Any] = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         **_git_info(repo_dir),
@@ -738,7 +774,8 @@ def write_run_info(
             "mask_ext": cfg["data"]["mask_ext"],
             "mask_suffix": cfg["data"]["mask_suffix"],
             "mask_threshold": int(cfg["data"]["mask_threshold"]),
-            "cache_path": cfg["data"].get("cache_path") or None,
+            "cache_path": cache_path,
+            "cache_sha256": cache_sha256,
         },
         "normalization": {
             "mean": list(cfg["data"]["mean"]),
@@ -767,6 +804,40 @@ def write_run_info(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(info, indent=2), encoding="utf-8")
     return info
+
+
+def update_run_info_timing(
+    path: str | Path,
+    info: Mapping[str, Any],
+    *,
+    peak_gpu_mem_mb: float,
+    epoch_times_s: Sequence[float],
+) -> dict[str, Any]:
+    """Rewrite ``run_info.json`` with measured peak memory and epoch time.
+
+    Args:
+        path: Existing ``run_info.json``.
+        info: Dict returned by :func:`write_run_info`.
+        peak_gpu_mem_mb: Maximum ``torch.cuda.max_memory_allocated`` this session.
+        epoch_times_s: Wall-clock seconds for each epoch completed this session.
+
+    Returns:
+        The updated dict that was written.
+
+    Notes:
+        Values cover the current process only. After a reliable resume the
+        earlier session's peak is not recoverable from ``last.pt``; together with
+        the per-epoch rows in ``metrics.csv`` this is the honest record.
+    """
+    updated = dict(info)
+    updated["peak_gpu_mem_mb"] = round(float(peak_gpu_mem_mb), 1)
+    updated["mean_epoch_time_s"] = (
+        round(float(sum(epoch_times_s)) / len(epoch_times_s), 2) if epoch_times_s else None
+    )
+    updated["epochs_this_session"] = len(epoch_times_s)
+    out = Path(path)
+    out.write_text(json.dumps(updated, indent=2), encoding="utf-8")
+    return updated
 
 
 def log_prediction_grid(
@@ -874,6 +945,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
+    if args.out_dir is not None:
+        cfg["run"]["out_dir"] = str(args.out_dir)
+
     if args.smoke:
         cfg = apply_smoke_overrides(cfg)
         print("SMOKE MODE: tiny encoder, 64 px, synthetic data, 3 steps. Numbers are not results.")
@@ -883,6 +957,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"run: {run_dir}  device: {device}  seed: {cfg['run']['seed']}")
+    if device.type == "cuda":
+        print(f"gpu: {torch.cuda.get_device_name(0)}")
+    else:
+        print("gpu: none (CPU)")
 
     synthetic_root: Path | None = None
     if args.smoke:
@@ -922,6 +1000,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     metrics_path = run_dir / "metrics.csv"
     start_epoch = 0
     best_val_dice = -1.0
+    peak_gpu_mem_mb = 0.0
+    epoch_times_s: list[float] = []
 
     # Smoke runs always start clean; real runs resume automatically.
     resume_allowed = not args.no_resume and not args.smoke
@@ -944,6 +1024,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         for epoch in range(start_epoch, int(cfg["train"]["epochs"])):
             started = time.time()
+            if device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats()
             # Log the LR the epoch starts with: after the last scheduler step of a
             # one-epoch smoke run the LR is legitimately 0, which would hide it.
             rates = get_learning_rates(optimizer)
@@ -952,7 +1034,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 model, train_loader, loss_fn, optimizer, scheduler, scaler, cfg, device, max_steps=max_steps
             )
             val_stats = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp)
+            peak_epoch_mb = (
+                float(torch.cuda.max_memory_allocated()) / (1024**2) if device.type == "cuda" else 0.0
+            )
+            peak_gpu_mem_mb = max(peak_gpu_mem_mb, peak_epoch_mb)
             elapsed = time.time() - started
+            epoch_times_s.append(elapsed)
 
             row = {
                 "epoch": epoch,
@@ -963,12 +1050,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "lr_encoder_a": rates["encoder_a"],
                 "lr_encoder_b": rates["encoder_b"],
                 "lr_head": rates["head"],
+                "peak_gpu_mem_mb": round(peak_epoch_mb, 1),
                 "epoch_time_s": round(elapsed, 2),
             }
             append_metrics_row(metrics_path, row)
             print(
                 f"epoch {epoch}: train {row['train_loss']:.4f} val {row['val_loss']:.4f} "
-                f"dice {row['val_dice']:.4f} iou {row['val_iou']:.4f} ({elapsed:.1f}s)"
+                f"dice {row['val_dice']:.4f} iou {row['val_iou']:.4f} "
+                f"peak {row['peak_gpu_mem_mb']:.0f}MB ({elapsed:.1f}s)"
             )
 
             if bool(cfg["logging"]["wandb"]):
@@ -1003,6 +1092,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive
         print("interrupted; last.pt holds the last completed epoch", file=sys.stderr)
         return 130
+    finally:
+        try:
+            update_run_info_timing(
+                run_dir / "run_info.json",
+                run_info,
+                peak_gpu_mem_mb=peak_gpu_mem_mb,
+                epoch_times_s=epoch_times_s,
+            )
+        except OSError as exc:  # pragma: no cover - e.g. Drive unmounted
+            print(f"warning: could not update run_info.json ({exc})", file=sys.stderr)
 
     if bool(cfg["logging"]["wandb"]):
         try:

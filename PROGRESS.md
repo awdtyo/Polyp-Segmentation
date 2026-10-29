@@ -115,3 +115,15 @@ Step 0 decisions, also recorded in AGENTS.md section 11:
 These resolve the open questions from the previous session: pretrained Branch B
 is the default, and the Colab cache is rebuilt per session.
 
+## Colab results
+
+To be filled in by the user after each run on the free T4 (16 GB). Values come
+from `metrics.csv` / `run_info.json`; the smoke row is a pipeline check, not a
+result. No VRAM number is claimed until it is measured.
+
+| Run | Config | Batch size | Peak VRAM (GB) | Mean epoch time (s) | Val Dice |
+|---|---|---:|---:|---:|---:|
+| GPU smoke (3 steps, synthetic) | exp001 | | | | |
+| 5-epoch memory/time probe | exp001 | | | | |
+| Real run | exp001 | | | | |
+
