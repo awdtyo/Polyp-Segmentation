@@ -194,3 +194,35 @@ what was decided and what it replaced.
 - **2026-10-29 - Final results use three seeds.** Every model in the final
   comparison is trained with seeds 42, 43 and 44 on the same committed split;
   tables report mean and standard deviation, never a single best run.
+- **2026-10-29 - T4 memory policy.** ConvNeXt-Base remains the default at
+  `image_size: 256`. If a real T4 run runs out of memory, first reduce
+  `train.batch_size` and raise `train.grad_accum_steps` to keep the effective
+  batch size. Switch to `configs/exp002_convnext_small_baseline.yaml` only as a
+  last resort. The default encoder is never changed silently.
+- **2026-10-29 - Branch B is pretrained.** Branch B is
+  `caformer_s18.sail_in1k` with `pretrained_b: true` for the main runs. A
+  from-scratch run (`pretrained_b: false`,
+  `configs/exp004_caformer_s18_scratch.yaml`) is an extra baseline only, never
+  the default.
+- **2026-10-29 - Cache lifecycle on Colab.** The npz cache is rebuilt at the
+  start of every Colab session from the raw dataset zip on Drive with
+  `scripts/build_cache.py`. The cache file lives outside git and is never
+  committed. Its SHA-256 is written to `run_info.json`, so a run can be tied to
+  the exact cache it read.
+- **2026-10-29 - Split policy for development and final comparison.** All
+  development and ablations use the committed image-level 800/100/100 split
+  (seed 42). The official upstream 880/120 lists shipped with the Kaggle
+  download (`train.txt` and `val.txt`) are NOT used yet; they may be added later
+  as a separate config for a final comparison with published numbers. This is a
+  policy clarification, not a replacement of the 2026-10-29 split entry.
+- **2026-10-29 - Mask threshold stays >127.** Masks are binarised with
+  `pixel > 127` before any resizing. The cache and future augmentation work do
+  not change this rule.
+- **2026-10-29 - Final results use three seeds (confirmed).** This confirms the
+  earlier 2026-10-29 entry: seeds 42, 43 and 44, mean and standard deviation in
+  the final tables. No single-run best number is reported as the result.
+- **2026-10-29 - Milestones 4-7 need explicit approval.** Fusion (concat at
+  stages 1-2, cross-attention at stages 3-4, `all_concat`; Milestone 4), MSU
+  links (`msu_mode: paper | released`; Milestone 5), `evaluate.py` plus ablation
+  configs, `results.csv` appending and multi-seed runs (Milestone 6), and the
+  final README (Milestone 7) must not start without the user's approval.

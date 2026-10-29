@@ -92,3 +92,26 @@ version:
 - Decide `pretrained_b` for the first branch-B run (Milestone 3), and whether
   to build the npz cache on Colab or read JPEGs directly.
 - Real-data training is not started. Milestones 3-7 remain.
+
+## Session 2026-10-29 (second session)
+
+Step 0 decisions, also recorded in AGENTS.md section 11:
+
+- **T4 memory:** ConvNeXt-Base stays the default. On OOM, reduce batch size and
+  use gradient accumulation first; `exp002` (convnext_small) is a last resort,
+  never a silent default change.
+- **Branch B:** `caformer_s18.sail_in1k`, pretrained. The from-scratch config
+  (`exp004`) is an extra baseline only.
+- **Cache:** rebuilt on Colab at the start of each session from the raw Drive
+  zip with `scripts/build_cache.py`; never committed. Its SHA-256 goes into
+  `run_info.json`.
+- **Splits:** development and ablations use the committed 800/100/100 split
+  (seed 42). The official upstream 880/120 lists are not used yet; they may be
+  added later as a separate config for a final published-number comparison.
+- **Mask threshold:** stays `> 127`, applied before resizing.
+- **Final results:** 3 seeds (42/43/44), mean and std.
+- **Milestones 4-7:** pending and must not start without approval.
+
+These resolve the open questions from the previous session: pretrained Branch B
+is the default, and the Colab cache is rebuilt per session.
+
