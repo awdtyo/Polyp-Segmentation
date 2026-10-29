@@ -283,3 +283,28 @@ counts, not VRAM measurements.
   committed 800/100/100 development split. It is deferred, not cancelled.
 - Milestone 4 is complete. Milestones 5-7 remain pending explicit approval.
 
+## Session 2026-10-29 (fifth session)
+
+### Colab GPU test compatibility
+
+- `tests/test_train.py::test_smoke_run_end_to_end` no longer asserts
+  `peak_gpu_mem_mb == 0.0` on every machine. A small device-aware helper now
+  requires exactly `0.0` on CPU and `> 0.0` on CUDA, and it checks both
+  `run_info.json` and the first `metrics.csv` row. The same test also checks
+  that `run_info.json` records `device: cpu | cuda` consistently with
+  `torch.cuda.is_available()`.
+- Audited the other end-to-end tests for device assumptions. The `mini` and
+  `--smoke` configs keep AMP disabled, the CPU unit tests use CPU tensors and a
+  disabled scaler, and the only timing assertion remains `mean_epoch_time_s >
+  0`, which holds for both CPU and GPU. No other hard-coded CPU-only peak or
+  timing assertions were found. The CUDA branch itself was not run locally
+  (CPU-only box); Colab remains the GPU check.
+- `notebooks/colab_run.ipynb` now runs the pytest cell with `check=False`,
+  captures stdout/stderr, prints the last 20 lines (including pytest's summary)
+  and a clear warning on failure. Training is not stopped by a test failure;
+  the section markdown says so.
+- `pytest` (the repo's `pytest.ini` supplies `-q`): **199 passed in 86.97 s**
+  on CPU; an explicit `pytest -q` run also passed and was double-quiet because
+  `-q` is already configured. The notebook JSON parses and the edited pytest
+  cell compiles.
+

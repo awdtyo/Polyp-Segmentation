@@ -1,8 +1,10 @@
 """Tests for the training pipeline: LR groups, scheduler, resume, logging, smoke run.
 
-Everything runs on CPU with random weights and synthetic images (the ``conftest``
-fixture or :func:`src.train.synthesize_smoke_data`). No real data, no downloads,
-no full training.
+Everything runs with random weights and synthetic images (the ``conftest``
+fixture or :func:`src.train.synthesize_smoke_data`). Most unit tests use CPU
+tensors. End-to-end ``train_mod.main`` tests use the available torch device, so
+assertions about CUDA-only values such as peak memory are device-aware. No real
+data, no downloads, no full training.
 """
 
 from __future__ import annotations
@@ -381,6 +383,18 @@ def test_build_dataloaders_uses_the_configured_cache(tmp_path: Path) -> None:
     assert set(torch.unique(train_loader.dataset[0]["mask"]).tolist()) <= {0.0, 1.0}
 
 
+def _assert_peak_gpu_memory_is_device_appropriate(peak_mb: float) -> None:
+    """Assert the logged peak CUDA memory matches the available device.
+
+    Args:
+        peak_mb: Peak GPU memory in MiB from ``run_info.json`` or ``metrics.csv``.
+    """
+    if torch.cuda.is_available():
+        assert peak_mb > 0.0, "a CUDA run must report positive peak GPU memory"
+    else:
+        assert peak_mb == 0.0, "a CPU-only run must report zero peak GPU memory"
+
+
 def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.chdir(tmp_path)
     out_root = tmp_path / "colab_runs"
@@ -403,7 +417,10 @@ def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, c
     assert info["model"]["fusion"] == ["single_a"] * 4
     assert info["model"]["msu"] is False
     assert info["model"]["encoder"] == "convnext"
-    assert info["peak_gpu_mem_mb"] == 0.0
+    assert info["device"] == ("cuda" if torch.cuda.is_available() else "cpu")
+    _assert_peak_gpu_memory_is_device_appropriate(float(info["peak_gpu_mem_mb"]))
+    first_epoch = dict(zip(rows[0].split(","), rows[1].split(",")))
+    _assert_peak_gpu_memory_is_device_appropriate(float(first_epoch["peak_gpu_mem_mb"]))
     assert info["epochs_this_session"] == 1
     assert info["mean_epoch_time_s"] is not None and info["mean_epoch_time_s"] > 0
     assert info["data_format"]["cache_sha256"] is None
