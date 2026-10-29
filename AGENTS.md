@@ -3,6 +3,7 @@
 Project: dual-encoder polyp segmentation (ConvNeXt + Meta-Polyp encoder, per-stage fusion, U-Net decoder with multi-scale upsampling).
 
 Read this whole file before writing code. If anything here conflicts with a request in chat, stop and ask.
+At session start, read PROGRESS.md; at session end, update it.
 
 ## 1. Goal
 
@@ -128,3 +129,67 @@ For each milestone, the report must contain: what changed, files touched, test o
 - Cross-attention on stage 1 or 2 tokens is expensive: at 256x256 input, stage 1 has 64x64 = 4096 tokens and stage 2 has 32x32 = 1024 tokens, versus 256 and 64 tokens at stages 3 and 4. That is why stages 1 and 2 use concatenation.
 - Meta-Polyp reports weaker results on small polyps. Keep per-image Dice available so small-lesion performance can be analyzed later.
 - Both encoders are pretrained only if the config says so. Pretrained and from-scratch runs are not comparable without saying so.
+
+## 11. Decisions log
+
+Decisions taken after sections 1-10 were written. An entry here overrides an
+earlier section. Nothing below changes without a new dated entry. Each entry says
+what was decided and what it replaced.
+
+- **2026-10-28 - Image size and encoder size.** `image_size: 256` stays the
+  default. ConvNeXt-Base stays the default encoder; `convnext_small` ships as a
+  separate fallback config, never as a silent change to the default.
+- **2026-10-28 - Pretrained tags are pinned.** Branch A is
+  `convnext_base.fb_in1k`, Branch B is `caformer_s18.sail_in1k`. Pinning the tag
+  means the exact weights are named in the config, not implied by a library
+  default. `caformer_s18` is the timm match for the Meta-Polyp encoder (depths
+  `[3, 3, 9, 3]`, channels `[64, 128, 320, 512]`, ConvFormer stages 1-2,
+  Transformer stages 3-4); `caformer_s36` is not a match.
+- **2026-10-28 - MSU follows the paper, not the released code.** Decoder 3
+  output upsampled x4 into Decoder 1 output (paper Eq. 6/7 and section III-E),
+  not the released repo's second link (F2-level decoder output upsampled x8, see
+  the Step 1 inspection report). New config key `model.msu_mode: paper | released`
+  exists so the released variant can be ablated later without code changes.
+  Only `paper` is implemented; `released` must raise `NotImplementedError`.
+- **2026-10-28 - The Convformer skip block is not implemented.** The released
+  repo runs a Convformer block on every skip before merging; we keep the plain
+  decoder's concat skip. `model.skip_convformer: false` is reserved as a config
+  flag, and setting it to `true` must raise `NotImplementedError` rather than
+  quietly doing nothing or quietly adding an unapproved module.
+- **2026-10-28 - No TensorFlow -> PyTorch weight remap.** The Meta-Polyp `.h5`
+  checkpoint is not converted. Both branches use timm ImageNet weights, and a
+  run's pretrained flags are recorded in `run_info.json`.
+- **2026-10-28 - Splits are case level, 80/10/10, fixed seed (superseded
+  2026-10-29).** `data.split_ratios` and `data.split_seed` record it.
+  `scripts/make_splits.py --group-regex` is the only supported way to build
+  splits when the data has case or patient ids; file-level random splits are not
+  acceptable. Kvasir-SEG has no case ids, so the 2026-10-29 entry below replaces
+  this rule for this dataset.
+- **2026-10-28 - Augmentation and logging.** albumentations is installed and used
+  for training augmentation only (val/test: resize + normalise). `metrics.csv` is
+  always written and W&B stays optional, default off, so every number survives
+  without a web service.
+- **2026-10-29 - Dataset is Kvasir-SEG.** 1000 2D RGB colonoscopy images with
+  1000 matching masks, used for both training and evaluation. Verified layout on
+  2026-10-29: `Kvasir-SEG/Kvasir-SEG/images/<id>.jpg` and
+  `Kvasir-SEG/Kvasir-SEG/masks/<id>.jpg`, identical sorted stems (1000/1000),
+  image sizes variable (roughly 570-626 x 528-547, e.g. 622x530). Masks are
+  grayscale JPEG, not PNG and not strictly binary (JPEG leaves ~18 grey levels),
+  so `data.mask_ext` is `.jpg` and masks are binarised with
+  `data.mask_threshold: 127` **before** resizing. This closes the section 1
+  dataset TODO and replaces the PENDING dataset entry.
+- **2026-10-29 - Splits are image level, 800/100/100, seed 42.** Generated once
+  by `scripts/make_splits.py` from sorted image stems with no `--group-regex`
+  and committed in `data/splits/`. Kvasir-SEG has no patient or case ids, so
+  leakage between splits cannot be ruled out; this limitation is stated in the
+  README and must be repeated in the paper write-up. The upstream 880/120
+  `train.txt`/`val.txt` files are not used. This replaces the case-level
+  80/10/10 entry above.
+- **2026-10-29 - Data cache.** `scripts/build_cache.py` resizes every image and
+  mask once to 256x256 and stores one `.npz` (images uint8, masks uint8 0/1)
+  outside git under `data/cache/`. `PolypDataset` reads the cache when
+  `data.cache_path` is set; the cache is an I/O optimisation only and never
+  changes the split or the labels.
+- **2026-10-29 - Final results use three seeds.** Every model in the final
+  comparison is trained with seeds 42, 43 and 44 on the same committed split;
+  tables report mean and standard deviation, never a single best run.
