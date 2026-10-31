@@ -428,6 +428,72 @@ def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, c
     assert "SMOKE MODE" in capsys.readouterr().out
 
 
+def test_optional_post_step_failure_warns_and_keeps_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A failing optional step (prediction grid) must warn but still exit 0.
+
+    This is the Colab failure mode from the exp001 run: the training and the
+    checkpoints succeeded, but a post-training step raised. Optional steps must
+    never turn a successful run into a non-zero exit code, and the reason must
+    be visible in the log with a full traceback.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    def exploding_grid(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("matplotlib exploded")
+
+    monkeypatch.setattr(train_mod, "log_prediction_grid", exploding_grid)
+
+    exit_code = train_mod.main(
+        ["--config", str(BASELINE_CONFIG), "--smoke", "--out-dir", str(tmp_path / "runs")]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "WARNING: optional end-of-run step 'prediction grid (epoch 0)' failed" in combined
+    assert "RuntimeError: matplotlib exploded" in combined
+    assert "Traceback (most recent call last)" in combined
+
+    run_dir = tmp_path / "runs" / "exp001_convnext_base_baseline_smoke"
+    assert (run_dir / "metrics.csv").is_file()
+    assert (run_dir / "last.pt").is_file()
+    assert (run_dir / "best.pt").is_file()
+    assert not (run_dir / "preds" / "epoch_0000.png").exists()
+    info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
+    assert info["epochs_this_session"] == 1
+
+
+def test_checkpoint_failure_returns_non_zero_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A failed checkpoint write is a required step: the exit code must be non-zero."""
+    monkeypatch.chdir(tmp_path)
+
+    def failing_save(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(train_mod, "save_checkpoint", failing_save)
+
+    exit_code = train_mod.main(
+        ["--config", str(BASELINE_CONFIG), "--smoke", "--out-dir", str(tmp_path / "runs")]
+    )
+
+    assert exit_code == train_mod.EXIT_REQUIRED_STEP_FAILED
+    assert exit_code != 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "FAILED (OSError" in combined
+    assert "No space left on device" in combined
+    assert "required post-training step failed" in combined
+    assert "Traceback (most recent call last)" in combined
+
+    run_dir = tmp_path / "runs" / "exp001_convnext_base_baseline_smoke"
+    assert (run_dir / "metrics.csv").is_file()
+    assert not (run_dir / "best.pt").exists()
+
+
 def test_caformer_smoke_run_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

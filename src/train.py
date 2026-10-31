@@ -27,8 +27,9 @@ import random
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import timm
@@ -57,6 +58,68 @@ METRICS_COLUMNS: tuple[str, ...] = (
     "peak_gpu_mem_mb",
     "epoch_time_s",
 )
+
+#: Exit code when a required post-training step (a checkpoint write) fails.
+#: Optional steps never change the exit code; they only log a warning.
+EXIT_REQUIRED_STEP_FAILED: int = 3
+
+
+class PostTrainingStepError(RuntimeError):
+    """A required end-of-run step failed, so the process must exit non-zero.
+
+    Raised only for steps whose failure invalidates the run's output, i.e. the
+    ``best.pt`` and ``last.pt`` checkpoint writes. Optional steps (prediction
+    grid, ``run_info.json`` rewrite, cleanup, summary) log a warning with the
+    traceback and leave the exit code untouched.
+
+    Args:
+        step: Human-readable name of the step that failed.
+    """
+
+    def __init__(self, step: str) -> None:
+        super().__init__(f"required post-training step failed: {step}")
+        self.step = step
+
+
+def run_post_step(name: str, fn: Callable[[], Any], *, required: bool) -> Any:
+    """Run one end-of-run step with a clear before/after log and its traceback.
+
+    Every post-training step (checkpoint save, prediction grid, ``run_info``
+    rewrite, cleanup) goes through here so a Colab run never fails silently
+    again: the step name is printed before and after, and a failure prints the
+    full traceback.
+
+    Args:
+        name: Human-readable step name, printed before and after the call.
+        fn: Zero-argument callable that performs the step.
+        required: ``True`` for checkpoint writes: a failure raises
+            :class:`PostTrainingStepError` so the process exits non-zero.
+            ``False`` for optional steps: a failure logs a loud warning and the
+            exit code is unchanged.
+
+    Returns:
+        Whatever ``fn`` returned, or ``None`` when an optional step failed.
+    """
+    print(f"[end-of-run] {name}: start", flush=True)
+    try:
+        result = fn()
+    except Exception as exc:  # noqa: BLE001 - every step failure must be reported
+        print(f"[end-of-run] {name}: FAILED ({type(exc).__name__}: {exc})", flush=True)
+        if required:
+            traceback.print_exc()
+            sys.stderr.flush()
+            raise PostTrainingStepError(name) from exc
+        print(
+            f"WARNING: optional end-of-run step '{name}' failed; "
+            "the run is still complete and the exit code is unchanged.",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        return None
+    print(f"[end-of-run] {name}: done", flush=True)
+    return result
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -940,6 +1003,23 @@ def _prepare_smoke_data(cfg: Mapping[str, Any], run_dir: Path) -> tuple[dict[str
     return updated, root
 
 
+def _finish_wandb(cfg: Mapping[str, Any]) -> None:
+    """Close a W&B run when logging is enabled; a no-op otherwise.
+
+    Args:
+        cfg: Resolved config; only ``logging.wandb`` is read.
+
+    Raises:
+        Exception: whatever ``wandb.finish()`` raises. Callers run this through
+            :func:`run_post_step`, so the failure is logged as a warning and
+            does not change the exit code.
+    """
+    if bool(cfg["logging"]["wandb"]):
+        import wandb
+
+        wandb.finish()
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     """Run training.
 
@@ -1042,6 +1122,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         except Exception as exc:  # pragma: no cover - optional dependency
             print(f"wandb disabled ({exc}); metrics.csv still written", file=sys.stderr)
 
+    exit_code = 0
     try:
         for epoch in range(start_epoch, int(cfg["train"]["epochs"])):
             started = time.time()
@@ -1091,8 +1172,18 @@ def main(argv: Iterable[str] | None = None) -> int:
 
             every = max(1, int(cfg["logging"]["log_images_every"]))
             if epoch % every == 0:
-                grid = log_prediction_grid(
-                    run_dir, model, val_loader, device, cfg, epoch, int(cfg["logging"]["num_log_images"])
+                grid = run_post_step(
+                    f"prediction grid (epoch {epoch})",
+                    lambda: log_prediction_grid(
+                        run_dir,
+                        model,
+                        val_loader,
+                        device,
+                        cfg,
+                        epoch,
+                        int(cfg["logging"]["num_log_images"]),
+                    ),
+                    required=False,
                 )
                 if grid is not None and bool(cfg["logging"]["wandb"]):
                     try:
@@ -1104,36 +1195,60 @@ def main(argv: Iterable[str] | None = None) -> int:
 
             if val_stats["dice"] > best_val_dice:
                 best_val_dice = float(val_stats["dice"])
-                save_checkpoint(best_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg)
+                run_post_step(
+                    f"save best.pt (epoch {epoch})",
+                    lambda: save_checkpoint(
+                        best_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
+                    ),
+                    required=True,
+                )
                 print(f"  new best val dice {best_val_dice:.4f} -> {best_path}")
             # last.pt is written after the best check, so it always carries the
             # current best value; otherwise a disconnect could make resume
             # overwrite best.pt with a worse epoch.
-            save_checkpoint(last_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg)
+            last_step_name = (
+                f"final checkpoint save: last.pt (epoch {epoch})"
+                if epoch + 1 >= int(cfg["train"]["epochs"])
+                else f"save last.pt (epoch {epoch})"
+            )
+            run_post_step(
+                last_step_name,
+                lambda: save_checkpoint(
+                    last_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
+                ),
+                required=True,
+            )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         print("interrupted; last.pt holds the last completed epoch", file=sys.stderr)
         return 130
+    except PostTrainingStepError as exc:
+        print(
+            f"ERROR: {exc}. The run stopped after a successful epoch but the "
+            "checkpoint on disk may be stale or incomplete; check free space "
+            "and that the run folder is writable.",
+            file=sys.stderr,
+            flush=True,
+        )
+        exit_code = EXIT_REQUIRED_STEP_FAILED
     finally:
-        try:
-            update_run_info_timing(
+        run_post_step(
+            "run_info rewrite (peak memory and epoch time)",
+            lambda: update_run_info_timing(
                 run_dir / "run_info.json",
                 run_info,
                 peak_gpu_mem_mb=peak_gpu_mem_mb,
                 epoch_times_s=epoch_times_s,
-            )
-        except OSError as exc:  # pragma: no cover - e.g. Drive unmounted
-            print(f"warning: could not update run_info.json ({exc})", file=sys.stderr)
+            ),
+            required=False,
+        )
 
-    if bool(cfg["logging"]["wandb"]):
-        try:
-            import wandb
-
-            wandb.finish()
-        except Exception:  # pragma: no cover
-            pass
-
-    print(f"done. best val dice {best_val_dice:.4f}; see {metrics_path}")
-    return 0
+    run_post_step("cleanup: wandb.finish", lambda: _finish_wandb(cfg), required=False)
+    run_post_step(
+        "summary",
+        lambda: print(f"done. best val dice {best_val_dice:.4f}; see {metrics_path}", flush=True),
+        required=False,
+    )
+    return exit_code
 
 
 if __name__ == "__main__":
