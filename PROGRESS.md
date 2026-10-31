@@ -594,3 +594,100 @@ and the final comparison protocol (both recorded in AGENTS.md section 11).
   table reproducible from git alone but mixes data into the repo.
 - The paired bootstrap compares test images only; a case-level or
   multi-dataset comparison is not implemented.
+
+## Session 2026-10-31 (ninth session)
+
+### Orientation (no assumptions from earlier sessions)
+
+Tree at `91bf9ac`, `main` **1 commit ahead** of `origin/main` (the untimed
+M6d timing-breakdown commit), plus one **uncommitted** file:
+`notebooks/colab_run.ipynb` (a `tqdm` epoch bar for the streamed child log).
+`git fetch` showed nothing new on the remote. `pytest` with the project venv
+(`.venv/bin/python -m pytest`, timm 1.0.30 / torch 2.15.0+cpu): **231 passed**
+at orientation. Note: the repo's `pytest.ini` adds `-q`, so a double `-q` hides
+the summary line; the exit status is still 0 and the collected count is 231.
+
+Milestone status at orientation matched the checklist: M1-M6 done, M7 partial
+(launcher and README section exist, final README pass outstanding). Milestone 5
+was verified complete, so no M5 code was written this session.
+
+### Part 2A: Milestone 5 was already complete (no change)
+
+Verified in the tree rather than from notes: `src/models/msu.py` (`MSULink`,
+`MSU`), `decoder.msu` / `decoder.msu_mode` in `PlainDecoder` and config
+validation, `configs/exp007_hybrid_msu.yaml`, and tests for all five required
+properties: link shapes, D4->D2 and D3->D1 information flow (including a
+dead-link check), D4->D2 applied *before* Decoder 1, exact Milestone-4 decoder
+state_dict keys with `msu: false`, an overfit-one-batch test that builds the
+model with `msu=True`, and an `exp007` `--smoke` end-to-end test. `released`
+raises `NotImplementedError`.
+
+Parameter counts (CPU, random weights, no download, recomputed this session):
+`exp005` 122,677,553 (122.677553 M); `exp006` 127,777,841 (127.777841 M);
+`exp007` 122,763,569 (122.763569 M), i.e. +86,016 MSU parameters over
+`exp005`. `--smoke` for `exp007` exits 0 with `params: 62.84M`.
+
+### Part 2B: the exit-code mechanism, and a fix
+
+The exp001 Colab run (exit 1 after five complete epochs) still cannot be
+reproduced: a local `--smoke` run on a healthy stdout exits 0. Reading the
+end-of-run path (`main()` after the loop) narrowed the possibilities to three,
+and one of them is now **reproduced and fixed** rather than guessed at:
+
+- **Reproduced:** if stdout's reading end is gone when the end-of-run log line
+  is printed, `print` raises `BrokenPipeError` and the process exits non-zero
+  (120 here) even though `metrics.csv` and both checkpoints are complete.
+  `python -m src.train ... | head -1` shows it. On Colab stdout/stderr go
+  through the kernel's output channel, which can close (tab closed, kernel not
+  draining, output truncated), and that is consistent with "5 epochs written,
+exit 1, cause invisible". It is **not proven** to be the exp001 cause: that run
+  used `subprocess.run` with an inherited stdout, so no pipe existed on the
+  notebook side.
+- **Fixed:** new `_emit()` writes a log line and returns `False` instead of
+  raising when the stream is closed; every end-of-run print (step start/done,
+  warnings, the failure message, the summary) uses it. New
+  `_flush_std_streams()` runs in `__main__` before `SystemExit`, so Python's
+  shutdown flush of a dead pipe cannot replace `main()`'s code with 120.
+- Unchanged: mid-run prints still fail loudly (a run that cannot log should
+  not silently keep training), and a failed checkpoint write still returns
+  `EXIT_REQUIRED_STEP_FAILED = 3`.
+- Still unknown: whether exp001 died in the loop (e.g. an uncaught exception
+  from a dataloader or `append_metrics_row` after the row was written) or at
+  interpreter teardown. The `[end-of-run] <step>: start/done/FAILED`
+  instrumentation plus live streaming will name it if it recurs.
+
+Tests added (`tests/test_train.py`): `_emit` swallows a closed stream and
+returns `False`; `_flush_std_streams` survives a pipe whose flush fails; and an
+end-to-end `--smoke` run whose stdout fails on every end-of-run line still
+returns exit code 0 with `metrics.csv`, `run_info.json`, `last.pt` and `best.pt`
+present.
+
+### Part 2B: Colab launcher
+
+The launcher requirements (live streaming via `subprocess.Popen(...,
+stdout=PIPE, stderr=STDOUT)`, printed exit code, raise only when non-zero,
+`RUN_SUFFIX`, `GRAD_ACCUM`, `REF` checkout instead of a plain `git pull`) were
+already in place from earlier sessions. The uncommitted `tqdm` epoch bar found
+in the working tree at session start was reviewed: `bar` advances on the
+`epoch N: train ... dice ... iou ...` lines, postfix carries the four metrics,
+a `resumed from ... at epoch N` line pre-fills skipped epochs, and
+`RAW_STREAM = True` bypasses the bar. One defect was fixed: `tqdm.write`
+defaults to stderr, so every log line was going to stderr; it now writes to
+`sys.stdout`. All 20 notebook cells compile and both regexes were checked
+against a real epoch line and resume line. The bar itself is untested here
+(it needs Colab/tqdm), which is a limitation, not a claim.
+
+### Tests
+
+- `.venv/bin/python -m pytest -q`: **234 passed** (231 at orientation + 3 new).
+  Every check is CPU-only; no pretrained weights were downloaded and no full
+training was run. No VRAM number is claimed from this box.
+
+### Open questions (current)
+
+- The exact exp001 exit-1 cause remains unknown; the next Colab failure will
+  name the step and print the traceback.
+- The timeline is unchanged: the ablation runs (exp005/exp006/exp007 plus
+  exp001/exp003/exp004 baselines, seeds 42/43/44) are still the user's Colab
+  work.
+- `results/results.csv` stays header-only in the repo.
