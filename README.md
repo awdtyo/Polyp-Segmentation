@@ -169,10 +169,24 @@ reinstalled.
 2. Open the notebook in Colab and choose **Runtime > Change runtime type > T4
    GPU**.
 3. Add `GH_TOKEN` in **Colab Secrets** (key icon). The token is used for the
-   clone/pull only; it is not printed and is not written into `.git/config`.
-4. Set `CONFIG`, `RUNS_DIR` and the optional `EPOCHS` / `BATCH_SIZE` overrides in
+   clone/fetch only; it is not printed and is not written into `.git/config`.
+4. Set `CONFIG`, `RUNS_DIR`, `REF` (commit, tag or branch to check out) and the
+   optional `EPOCHS`, `BATCH_SIZE`, `GRAD_ACCUM` and `RUN_SUFFIX` overrides in
    the first cell.
 5. Run the cells top to bottom.
+
+`REF` is checked out instead of a plain `git pull`, so a rerun cannot silently
+pick up newer code than the one recorded in `run_info.json`; a commit hash is
+the most reproducible choice. `RUN_SUFFIX` is appended to `run.name`, so a
+probe with a different epoch count, seed or batch size gets its own folder
+instead of resuming into the previous one. `GRAD_ACCUM` overrides
+`train.grad_accum_steps` when `BATCH_SIZE` has to drop on a T4.
+
+The training cell streams the child process output line by line and prints the
+exit code, raising only when it is non-zero. `src.train` also logs every
+end-of-run step (checkpoint saves, prediction grid, `run_info.json` rewrite,
+cleanup) before and after, so a failure after the last epoch is visible in the
+streamed log instead of being lost in a buffered pipe.
 
 `RUNS_DIR` is on Drive, so checkpoints survive a disconnect. Data is read from
 `/content`, never directly from Drive. The cache is rebuilt in `/content` at the
