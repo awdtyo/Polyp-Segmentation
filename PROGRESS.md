@@ -691,3 +691,111 @@ training was run. No VRAM number is claimed from this box.
   exp001/exp003/exp004 baselines, seeds 42/43/44) are still the user's Colab
   work.
 - `results/results.csv` stays header-only in the repo.
+
+## Session 2026-10-31 (tenth session)
+
+### Orientation
+
+Clean tree at `0db9499`, `main == origin/main`, **234 passed** with
+`.venv/bin/python -m pytest -q`. Both requested items already existed on disk
+from earlier commits this date: the per-epoch timing breakdown in `91bf9ac`
+(M6d) and the streamed `tqdm` epoch bar in `d321bcd`. This session therefore
+verified them from the code instead of re-implementing them, fixed one defect
+in the notebook, and produced the measurements and proposals below.
+
+### Task 1: timing breakdown (verified; no new code needed)
+
+`src/train.py` already times train, validation, prediction grid, `best.pt` and
+`last.pt` with `time.perf_counter()`, writes `train_time_s`, `val_time_s`,
+`grid_time_s`, `best_save_time_s`, `last_save_time_s` at the end of
+`METRICS_COLUMNS`, and prints them in the epoch line after the unchanged
+`epoch N: train X val Y dice Z iou W peak ...MB (...)` fields.
+`epoch_time_s` is the full epoch wall clock, so the 37 s logged versus ~98 s
+observed gap is the grid plus both checkpoint writes, which used to be logged
+outside the epoch total. Older `metrics.csv` files stay resumable:
+`append_metrics_row` accepts a header that is a prefix of the current one, keeps
+those columns and writes no new ones (covered by
+`test_metrics_csv_accepts_a_legacy_header_and_keeps_its_columns`).
+
+### Task 1: expected checkpoint size for `exp005`
+
+Measured on CPU with random weights (no download, no training), by serialising
+the exact payload `save_checkpoint` writes and computing the AdamW state from
+the parameter count:
+
+| Part | Size |
+|---|---:|
+| `exp005` parameters | 122,677,553 |
+| weights + metadata (`torch.save` file) | **491.0 MB** (0.46 GiB) |
+| AdamW state (2 x fp32 tensors per parameter) | **981.5 MB** (0.91 GiB) |
+| **full `last.pt` / `best.pt`** | **~1.47 GB** (1.37 GiB) |
+| written per epoch (both checkpoints) | **~2.95 GB** |
+
+`best.pt` is not weights-only: both checkpoints carry model, optimizer,
+scheduler, scaler, epoch, best Dice, RNG state and config. 2.95 GB per epoch to
+Google Drive is the likely bulk of the missing ~61 s (a full Drive write of a
+1.5 GB file typically costs several to tens of seconds, and it happens twice).
+
+### Task 1: proposals to cut the time (NOT implemented)
+
+1. **`last.pt` local, mirrored to Drive every N epochs.** Write `last.pt` to
+   `/content/last.pt` each epoch and copy it to the run folder every
+   `save_every_n_epochs` (proposed default 5), plus once at the end. Resume
+   reads Drive when the local file is missing, so a disconnect loses at most N-1
+   epochs instead of the session. Needs one new config key, a "local then copy"
+   path in `save_checkpoint` and a resume test.
+2. **Weights-only `best.pt`.** ~491 MB instead of 1.47 GB, and the optimizer
+   state is useless for `evaluate.py`. Model selection only needs weights + the
+   epoch and best-Dice scalars; `last.pt` keeps the full state for resume.
+3. **Make the prediction grid optional.** `log_images_every` already gates it;
+   setting it to 0 (or a `logging.log_images: false` flag) removes a
+   forward pass and a PNG write on Drive every N epochs. If the PNG is the slow
+   part, writing it to `/content` and copying at the end would help more.
+4. Optional, not requested: copy `metrics.csv` once per epoch only (it is tiny),
+   and keep the grid images in `/content` for the session.
+   None of these change training semantics, and none is implemented yet.
+
+### Task 1: the `lr_scheduler.step()` warning
+
+Not an ordering bug. `_optimizer_step` runs `scaler.step(optimizer)` →
+`scaler.update()` → `optimizer.zero_grad()` → `scheduler.step()`, which is the
+required order. PyTorch's warning fires only at `scheduler._step_count == 1`
+(torch 2.15: `optim/lr_scheduler.py`, "Detected call ... before
+`optimizer.step()`") when `optimizer._opt_called` is still false; that flag is
+set by the wrapper around `optimizer.step`, which AMP skips when GradScaler
+finds inf/nan. With `init_scale=65536` in fp16 the very first step is commonly
+skipped, so the warning is the expected one-time AMP symptom.
+
+A real, smaller issue does exist: `scheduler.step()` is unconditional, so a
+**skipped** AMP step still advances the cosine schedule. Reproduced with a
+scaler that skips step 1: the LR moved 1e-3 → 9.6194e-4 on the skipped step and
+the warning appeared once. The cost is one step out of
+`epochs * steps_per_epoch` (~1 in 37,500 at 100 epochs, batch 8), i.e.
+negligible for the results, but a fix is a two-line guard around
+`scheduler.step()` (`if scaler_stepped`) and was **not** applied here.
+
+### Task 2: notebook
+
+The bar, `RAW_STREAM`, `REF`, `SEED`, `RUN_SUFFIX`, `GRAD_ACCUM`, the exit-code
+print and the evaluate/aggregate cells were already merged. One defect was
+found and fixed: the `tqdm.write(...)` line had lost its loop indentation, so
+the training cell was `IndentationError`-invalid and would not have run on
+Colab. The bar fields were also renamed to `train_loss` / `val_loss` /
+`val_dice` / `val_iou` so the bar shows the requested names. Verified by
+compiling every code cell and by executing the extracted bar block against
+synthetic child output (resume line at epoch 1 + epochs 1-2): 3/3 epochs
+advanced, postfix `{'train_loss': '0.1000', 'val_loss': '0.1000',
+'val_dice': '0.8900', 'val_iou': '0.8000'}`, all five log lines printed above
+the bar. Not run on Colab itself.
+
+### Tests
+
+- `.venv/bin/python -m pytest -q`: **234 passed**, no new tests this session
+  (the timed columns, legacy header and smoke paths are already covered).
+- No pretrained weights downloaded, no training run, no VRAM number claimed.
+
+### Open questions (current)
+
+- Approve or reject the three speed proposals above; none is implemented.
+- Should the skipped-step scheduler advance be fixed? It changes the LR curve by
+  one step out of tens of thousands.
