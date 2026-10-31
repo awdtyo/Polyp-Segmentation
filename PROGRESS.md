@@ -33,9 +33,10 @@ Last updated: 2026-10-31.
       zero-shot evaluation of the Kvasir-trained checkpoints on Kvasir-SEG test
       plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Steps 0
       (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
-      (`scripts/prepare_datasets.py`, run on the real data) and 3 (multi-dataset
-      `src/evaluate.py`) are done; Steps 4-7 remain. Everything here is
-      single-seed and provisional, not a final result.
+      (`scripts/prepare_datasets.py`, run on the real data), 3 (multi-dataset
+      `src/evaluate.py`) and 4 (config x dataset aggregation) are done; Steps
+      5-7 remain. Everything here is single-seed and provisional, not a final
+      result.
 
 ## Decisions in force
 
@@ -1004,12 +1005,46 @@ passed** (was 268; +5 evaluate tests). The checkpoint used for every dataset is
 `best.pt`, i.e. the one selected by Kvasir val Dice; external datasets never
 select or tune it.
 
-Left to do for Milestone 8: Step 4 (`aggregate_results.py` config x dataset
-matrix: Dice/IoU, mean/std with `n/a` for one seed, CSV + markdown), Step 5
-(missing-dataset skip vs explicit-request failure, evaluate smoke, val
-reproduction within tolerance), Step 6 (`notebooks/colab_eval.ipynb`), Step 7
-(validation; exp003 Kvasir val first, then the full table), `docs/datasets.md`
-and the evaluation-protocol section.
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (fourteenth session) - Milestone 8, Step 4
+
+### Step 4: `scripts/aggregate_results.py` config x dataset matrix (done)
+
+Rewritten to read every `eval_<split>_<dataset>[_ttaflip].json` + matching
+`per_image_...csv` written by `src.evaluate` (the old hardcoded
+`eval_test.json`/`per_image_test.csv` names are gone) and to group by config
+(seed suffix stripped) *within* each `(dataset, split, tta)` cell.
+
+- `aggregate_results.md` is now the human matrix: a **Dice** table and an
+  **IoU** table with rows = configs, columns = datasets, cells = `mean +/- std`
+  and `n/a` for a single seed or an unevaluated cell, plus a details table
+  (MAE, small-lesion Dice, params, epoch time) and the optional comparison.
+  Datasets are listed in registry order.
+- `aggregate_results.csv` is the long form (one row per
+  `(config, dataset, split, tta)`): `config, dataset, split, tta, n_seeds,
+  dice_mean, dice_std, iou_mean, iou_std, mae_mean, small_lesion_dice, params_m,
+  mean_epoch_time_s`, so the matrix can be pivoted or joined.
+- `--compare A B` now runs on one dataset: `--dataset` picks it, otherwise the
+  script auto-selects the preferred `(split, tta)` cell that holds both configs.
+  New flags `--dataset`, `--split`, `--tta`.
+- New helpers: `parse_eval_name`, `load_run` (per-folder, list),
+  `dataset_cells`, `group_cell`, `summarize_runs`, `preferred_rows`,
+  `dataset_order`, `resolve_cell`. `bootstrap_ci`/`paired_comparison` kept.
+- `tests/test_aggregate_results.py`: rewritten for the new names; 11 tests
+  (grouping + `n/a`, dataset-column matrix, stem parsing, warning on a missing
+  per-image CSV, registry-ordered columns, auto cell for `--compare`, plus the
+  kept bootstrap/paired tests).
+
+Verification: `tests/test_aggregate_results.py` -> **11 passed**; full suite
+`.venv/bin/python -m pytest -o addopts="" -q` -> **278 passed** (was 273; +5).
+
+Left to do for Milestone 8: Step 5 (missing-dataset skip vs explicit-request
+failure, evaluate smoke, val reproduction within tolerance), Step 6
+(`notebooks/colab_eval.ipynb`), Step 7 (validation; exp003 Kvasir val first,
+then the full table) plus `docs/datasets.md`, the evaluation-protocol section
+and the README pass (the README still shows the old `eval_test.json` names).
 
 Open questions (current): unchanged from the eleventh session (commit `d5508ca`
 is unpushed model code outside M8).
