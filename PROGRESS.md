@@ -4,7 +4,7 @@ Living status file. AGENTS.md is the specification; this file records what is
 actually done, what is in flight, and what is blocked. Update it at the end of
 every session.
 
-Last updated: 2026-10-29.
+Last updated: 2026-10-31.
 
 ## Milestone checklist
 
@@ -19,9 +19,13 @@ Last updated: 2026-10-29.
 - [x] 5. MSU links on and off.
 - [ ] 6. `evaluate.py`, results logging, and ablation configs for: A only,
       B only, all concat, hybrid fusion, hybrid fusion + MSU, hybrid fusion
-      without MSU.
+      without MSU. **Not started**: `src/evaluate.py` is still a stub and
+      `results/results.csv` is header-only; the ablation configs exist. Needs
+      explicit approval.
 - [ ] 7. `notebooks/colab_run.ipynb` launcher and a README section on running
-      on Colab.
+      on Colab. **Partial**: launcher (streaming output, `REF`, `RUN_SUFFIX`,
+      `GRAD_ACCUM`) and the README section are in place; the final README pass
+      is still to do.
 
 ## Decisions in force
 
@@ -52,7 +56,8 @@ version:
 - Pretrained timm downloads are Colab-only; tests and smoke runs stay
   `pretrained: false`.
 - The upstream 880/120 split comparison is deferred, not cancelled.
-- Milestone 5 (MSU) is complete. Milestones 6-7 are still pending.
+- Milestone 5 (MSU) is complete. Milestone 6 is pending explicit approval;
+  Milestone 7 is partial (launcher and README section exist).
 
 ## Session 2026-10-29 (first session)
 
@@ -400,4 +405,98 @@ parameter counts, not VRAM measurements.
   accumulation if needed.
 - Milestone 5 is complete. Milestones 6 (evaluation, results logging, ablation
   configs) and 7 (final README) remain pending explicit approval.
+
+## Session 2026-10-31 (seventh session)
+
+### Orientation
+
+- Repo was clean, `main` level with `origin/main` at `32b68c3`, no unpushed
+  work. `pytest`: 211 passed. Milestone 5 was verified complete at the start
+  (MSU links, `decoder.msu`/`decoder.msu_mode`, `exp007`, state_dict
+  equivalence with MSU off, gradient flow, MSU-on overfit test and `--smoke`),
+  so Part 2A was skipped as agreed.
+
+### End-of-run instrumentation (`src/train.py`)
+
+- Every post-training step now goes through `run_post_step()` and logs
+  `[end-of-run] <step>: start` / `done` (or `FAILED`) with the full traceback.
+  Steps: prediction grid, `save best.pt`, `save last.pt` (labelled "final
+  checkpoint save" on the last epoch), `run_info` rewrite, `wandb.finish`
+  cleanup and the final summary.
+- Required steps are the checkpoint writes: a failure raises
+  `PostTrainingStepError`, main prints an ERROR with the likely cause (free
+  space / writability) and returns `EXIT_REQUIRED_STEP_FAILED = 3`.
+- Optional steps (prediction grid, `run_info` rewrite, cleanup, summary) print a
+  loud `WARNING` with the traceback and leave the exit code unchanged. The
+  `finally` handler now catches every exception, not only `OSError`.
+- New tests: a failing prediction grid keeps exit code 0 and logs the warning
+  plus traceback; a failing checkpoint returns the non-zero code and still
+  leaves `metrics.csv`.
+
+### The exp001 exit-code-1 cause: not found, not guessed
+
+- The Colab exp001 run wrote 5 epochs of `metrics.csv` and `run_info.json` but
+  exited 1. A local `--smoke` run (matplotlib 3.11.2 present) exits 0, so the
+  failure could not be reproduced on the CPU box.
+- What the code allowed after a successful last epoch: an exception from the
+  last epoch's grid save, `best.pt`/`last.pt` write (Drive full or unmounted),
+  or the `finally` `run_info` rewrite (which only caught `OSError`), plus a
+  `BrokenPipeError` on the final print. The most likely candidate is a
+  checkpoint write to Drive failing after the last `metrics.csv` row, which
+  matches "5 epochs recorded, exit 1". The traceback was lost because the
+  notebook ran the child with a piped, block-buffered stdout.
+- Rather than guess, both sides are now fixed: the child is streamed
+  unbuffered and every end-of-run step is logged with its traceback. The next
+  Colab failure will name the step and show the exception.
+
+### Colab launcher
+
+- The training cell uses `subprocess.Popen(..., stdout=PIPE,
+  stderr=STDOUT, text=True, bufsize=1)` with `-u` and `PYTHONUNBUFFERED=1`,
+  prints every line live, prints the exit code and raises only when it is
+  non-zero.
+- `REF` (commit, tag or branch) is fetched and checked out instead of a plain
+  `git pull`; a branch is reset to `origin/REF`, a tag or commit is checked out
+  detached. `RUN_SUFFIX` is appended to `run.name`; `GRAD_ACCUM` overrides
+  `train.grad_accum_steps`.
+
+### Measured T4 results and exp008
+
+- The "Colab results" table now holds the user's measured values: exp001 5
+  epochs, 2.794 GB peak, 23.85 s mean epoch, best val Dice 0.8655 (epoch 4);
+  exp003 5 epochs, 1.951 GB, 15.66 s, best 0.8869 (epoch 3, last 0.8845). The
+  GPU smoke row is `n/a` (T4 pytest smoke used `convnext_tiny` at 64 px, 703 MB)
+  and the real-run row is still empty.
+- The two runs used different encoder learning rates (`exp001` 3.0e-5,
+  `exp003` 1.0e-4), so they are not a clean architecture comparison. Added
+  `configs/exp008_convnext_base_lr1e4.yaml`, identical to `exp001` except
+  `run.name` and `train.lr_convnext: 1.0e-4`; `exp001` is untouched.
+- README gained a config table covering every experiment file.
+
+### Parameter counts (CPU, random weights, no download, recomputed)
+
+| Config | Parameters |
+|---|---:|
+| `exp005` hybrid fusion, MSU off | 122.677553 M |
+| `exp006` all concat | 127.777841 M |
+| `exp007` hybrid fusion, MSU on | 122.763569 M |
+| `exp008` ConvNeXt-Base at 1e-4 | 97.221377 M |
+
+### Tests
+
+- `pytest`: **213 passed** (2 new end-of-run tests). `--smoke` runs for
+  `exp001` and `exp008` exit 0 and log every end-of-run step. No pretrained
+  weights were downloaded, no full training was run, and no VRAM number was
+  measured on this box.
+
+### Open questions (current)
+
+- Milestone 6 (evaluation, results logging, ablation runs) is not started and
+  needs explicit approval.
+- The exact Colab exit-1 cause is still unknown; the instrumentation and
+  streaming should identify it on the next run.
+- exp003's batch size was not recorded; `config_resolved.yaml` from that run
+  should confirm it (the table marks it `n/a` until then).
+- Whether to run `exp008` (ConvNeXt at 1e-4) before or alongside the
+  ablations is an open scheduling question.
 

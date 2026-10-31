@@ -5,12 +5,14 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestones 1-5 of 7 complete** (skeleton and dataset preparation;
-ConvNeXt-Base baseline with a plain decoder, training loop and resume; Meta-Polyp
-CAFormer-S18 branch with the same decoder; dual-encoder fusion with concat at
-stages 1-2 and cross-attention at stages 3-4; paper-mode multi-scale upsampling
-links). Evaluation and the final README remain. See
-[PROGRESS.md](PROGRESS.md) for the live checklist.
+Status: **Milestones 1-5 of 7 complete; Milestone 7 partial.** Skeleton and
+dataset preparation; ConvNeXt-Base baseline with a plain decoder, training loop
+and resume; Meta-Polyp CAFormer-S18 branch with the same decoder; dual-encoder
+fusion with concat at stages 1-2 and cross-attention at stages 3-4; paper-mode
+multi-scale upsampling links. The Colab launcher and the "Running on Colab"
+section exist (Milestone 7, partial); Milestone 6 (evaluation and results
+logging) is pending explicit approval. See [PROGRESS.md](PROGRESS.md) for the
+live checklist.
 
 ## Layout
 
@@ -275,6 +277,7 @@ measurements: no VRAM number is claimed.
 ## Roadmap
 
 Milestones 1-5 are complete. Milestone 6 (evaluation, results logging and the
-ablation configs) is next, then the final README; Milestones 6-7 still need
-explicit approval. The thin Colab launcher (`notebooks/colab_run.ipynb`) is
-already in place. See [PROGRESS.md](PROGRESS.md).
+ablation runs) is pending explicit approval. Milestone 7 is **partial**: the
+thin Colab launcher (`notebooks/colab_run.ipynb`) and the README section are in
+place, while the final README pass is still to do. See
+[PROGRESS.md](PROGRESS.md).
