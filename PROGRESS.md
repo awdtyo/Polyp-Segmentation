@@ -127,15 +127,30 @@ is the default, and the Colab cache is rebuilt per session.
 
 ## Colab results
 
-To be filled in by the user after each run on the free T4 (16 GB). Values come
-from `metrics.csv` / `run_info.json`; the smoke row is a pipeline check, not a
-result. No VRAM number is claimed until it is measured.
+Measured by the user on the free T4 (16 GB) and copied from `metrics.csv` /
+`run_info.json`. The smoke row is a pipeline check, not a result. Blank cells
+were not measured; they are never filled by guesswork.
 
 | Run | Config | Batch size | Peak VRAM (GB) | Mean epoch time (s) | Val Dice |
-|---|---|---:|---:|---:|---:|
-| GPU smoke (3 steps, synthetic) | exp001 | | | | |
-| 5-epoch memory/time probe | exp001 | | | | |
+|---|---|---:|---:|---:|---|
+| GPU smoke (3 steps, synthetic) | exp001 | n/a | n/a | n/a | n/a |
+| 5-epoch memory/time probe | exp001 | 8 (to confirm in `config_resolved.yaml`) | 2.794 | 23.85 | 0.8655 (best, epoch 4) |
+| 5-epoch memory/time probe | exp003 | n/a | 1.951 | 15.66 | 0.8869 (best, epoch 3; last epoch 0.8845) |
 | Real run | exp001 | | | | |
+
+Notes:
+
+- The GPU smoke row is `n/a` on purpose. The pytest smoke run on a T4 used
+  `convnext_tiny` at 64 px and peaked at 703 MB, which is a pipeline check of
+  the smoke path, not a measurement of either model in the table.
+- Peak VRAM is `torch.cuda.max_memory_allocated()`; the table is in GB, the
+  measured values were 2794 MB (exp001) and 1951 MB (exp003).
+- exp001 and exp003 used **different encoder learning rates** (`exp001`
+  `train.lr_convnext: 3.0e-5`, `exp003` `train.lr_encoder_b: 1.0e-4`). The two
+  rows are therefore not a clean architecture comparison, and the Dice gap must
+  not be reported as a ConvNeXt vs CAFormer result. `exp008` exists to repeat
+  the ConvNeXt baseline at `1e-4`.
+- The "Real run" row is still empty: no full-length run has been measured.
 
 ## Session 2026-10-29 (third session)
 
