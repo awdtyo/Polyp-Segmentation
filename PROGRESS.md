@@ -34,9 +34,9 @@ Last updated: 2026-10-31.
       plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Steps 0
       (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
       (`scripts/prepare_datasets.py`, run on the real data), 3 (multi-dataset
-      `src/evaluate.py`) and 4 (config x dataset aggregation) are done; Steps
-      5-7 remain. Everything here is single-seed and provisional, not a final
-      result.
+      `src/evaluate.py`), 4 (config x dataset aggregation) and 5 (test suite for
+      the multi-dataset path) are done; Steps 6-7 remain. Everything here is
+      single-seed and provisional, not a final result.
 
 ## Decisions in force
 
@@ -1045,6 +1045,55 @@ failure, evaluate smoke, val reproduction within tolerance), Step 6
 (`notebooks/colab_eval.ipynb`), Step 7 (validation; exp003 Kvasir val first,
 then the full table) plus `docs/datasets.md`, the evaluation-protocol section
 and the README pass (the README still shows the old `eval_test.json` names).
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (fifteenth session) - Milestone 8, Step 5
+
+### Step 5: tests for the multi-dataset path (done)
+
+Extended `tests/test_evaluate.py` with two tests that close out Step 5 and tie
+Steps 3 and 4 together on a real (tiny) smoke checkpoint:
+
+- `test_processed_loader_shapes_and_binary_masks`: the zero-shot loader
+  (`build_processed_loader`) over a prepared `processed/<name>/data.npz` yields
+  `(B, 3, H, W)` images and `(B, 1, H, W)` masks whose values are a subset of
+  `{0.0, 1.0}`. Ids are collected across every batch (the smoke config uses
+  `train.batch_size: 2`, so the first batch holds only two of the three images),
+  then checked against the prepared order.
+- `test_multi_dataset_evaluation_feeds_the_aggregate_matrix`: `evaluate_mod.main`
+  on `kvasir_seg` + `cvc_clinicdb` + `cvc_colondb` writes three results rows (all
+  `split=test`) and the matching `eval_test_<dataset>.json` files, and
+  `scripts.aggregate_results.main` over the same runs folder produces the matrix
+  header `| Config | kvasir_seg | cvc_clinicdb | cvc_colondb | n seeds |` with
+  CSV rows covering all three datasets for one config.
+
+The rest of the Step 5 checklist was already covered by earlier work:
+
+- Adapters: shapes, mask values in {0, 1}, stem matching across differing
+  extensions, unmatched-pair and count checks: `tests/test_prepare_datasets.py`
+  (12 tests, Step 2).
+- Missing dataset skipped with a warning, failing only when requested by name:
+  `tests/test_prepare_datasets.py::test_main_skips_absent_datasets_and_prepares_present_ones`
+  and `::test_main_fails_when_an_explicit_dataset_is_absent` for prep;
+  `tests/test_evaluate.py::test_missing_processed_dataset_fails_loudly` (explicit
+  `--dataset` with no npz -> exit 1, message names
+  `scripts/prepare_datasets.py --dataset NAME`) and
+  `::test_unknown_dataset_is_a_usage_error` (exit 2) for evaluation.
+- Evaluate smoke and val reproduction within tolerance:
+  `tests/test_evaluate.py::test_evaluate_metrics_match_the_training_function`
+  compares `src.evaluate` output against `src.train.evaluate` and `SegMetrics`.
+
+Verification: `tests/test_evaluate.py tests/test_aggregate_results.py` -> **25
+passed**; full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **280
+passed** (was 278; +2). CPU-only, no pretrained weights downloaded, no full
+training run.
+
+Left to do for Milestone 8: Step 6 (`notebooks/colab_eval.ipynb`), Step 7
+(validation; exp003 Kvasir val first, then the full table) plus `docs/datasets.md`,
+the evaluation-protocol section and the README pass (the README still shows the
+old `eval_test.json` names).
 
 Open questions (current): unchanged from the eleventh session (commit `d5508ca`
 is unpushed model code outside M8).

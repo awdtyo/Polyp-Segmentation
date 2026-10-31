@@ -17,6 +17,7 @@ import torch
 
 from src import evaluate as evaluate_mod
 from src import train as train_mod
+from src.data_registry import get_spec, resolve_data_root
 from src.losses import build_loss
 from src.metrics import SegMetrics
 from src.models.net import build_model
@@ -342,3 +343,78 @@ def test_results_csv_refuses_a_different_header(tmp_path: Path, smoke_run: Path)
     )
     assert code == evaluate_mod.EXIT_FAILURE
     assert results.read_text(encoding="utf-8") == "run_name,dice\nold,0.5\n"
+
+
+def test_processed_loader_shapes_and_binary_masks(
+    isolated_test_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The zero-shot loader yields (B,3,H,W) images and (B,1,H,W) masks in {0,1}."""
+    data_root = tmp_path / "data"
+    cfg = load_config(isolated_test_run / "config_resolved.yaml")
+    size = int(cfg["data"]["image_size"])
+    _write_processed_dataset(data_root, "cvc_clinicdb", size, n=3)
+    monkeypatch.setenv("DATA_ROOT", str(data_root))
+
+    resolved_root = resolve_data_root(str(cfg["data"].get("data_root", "")))
+    loader = evaluate_mod.build_processed_loader(cfg, get_spec("cvc_clinicdb"), resolved_root)
+    batches = list(loader)
+    for batch in batches:
+        assert batch["image"].shape[1:] == (3, size, size)
+        assert batch["mask"].shape[1:] == (1, size, size)
+        assert set(torch.unique(batch["mask"]).tolist()) <= {0.0, 1.0}
+    seen = [sample_id for batch in batches for sample_id in batch["id"]]
+    assert seen == ["cvc_clinicdb_000", "cvc_clinicdb_001", "cvc_clinicdb_002"]
+
+
+def test_multi_dataset_evaluation_feeds_the_aggregate_matrix(
+    isolated_test_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: three datasets -> three rows -> a config x dataset matrix.
+
+    This ties Steps 3 and 4 together on a real (tiny) smoke checkpoint.
+    """
+    from scripts import aggregate_results as agg
+
+    data_root = tmp_path / "data"
+    cfg = load_config(isolated_test_run / "config_resolved.yaml")
+    size = int(cfg["data"]["image_size"])
+    _write_processed_dataset(data_root, "cvc_clinicdb", size, n=2)
+    _write_processed_dataset(data_root, "cvc_colondb", size, n=4)
+    monkeypatch.setenv("DATA_ROOT", str(data_root))
+
+    results = tmp_path / "results.csv"
+    code = evaluate_mod.main(
+        [
+            "--run_dir",
+            str(isolated_test_run),
+            "--split",
+            "test",
+            "--dataset",
+            TRAIN_DATASET,
+            "--dataset",
+            "cvc_clinicdb",
+            "--dataset",
+            "cvc_colondb",
+            "--results_csv",
+            str(results),
+        ]
+    )
+    assert code == evaluate_mod.EXIT_OK
+
+    rows = _read_results(results)
+    assert [row["dataset"] for row in rows] == [TRAIN_DATASET, "cvc_clinicdb", "cvc_colondb"]
+    assert [row["split"] for row in rows] == ["test", "test", "test"]
+    assert (isolated_test_run / "eval_test_cvc_colondb.json").is_file()
+
+    out_dir = tmp_path / "aggregate"
+    assert agg.main(["--runs-dir", str(isolated_test_run.parent), "--out-dir", str(out_dir)]) == 0
+    markdown = (out_dir / "aggregate_results.md").read_text(encoding="utf-8")
+    assert "| Config | kvasir_seg | cvc_clinicdb | cvc_colondb | n seeds |" in markdown
+    csv_rows = _read_aggregate(out_dir / "aggregate_results.csv")
+    assert {row["dataset"] for row in csv_rows} == {"kvasir_seg", "cvc_clinicdb", "cvc_colondb"}
+    assert len({row["config"] for row in csv_rows}) == 1, "all three rows belong to the same run"
+
+
+def _read_aggregate(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
