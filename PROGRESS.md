@@ -35,9 +35,12 @@ Last updated: 2026-10-31.
       (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
       (`scripts/prepare_datasets.py`, run on the real data), 3 (multi-dataset
       `src/evaluate.py`), 4 (config x dataset aggregation), 5 (test suite for
-      the multi-dataset path) and 6 (`notebooks/colab_eval.ipynb`) are done;
-      Step 7 (validation and docs) remains. Everything here is single-seed and
-      provisional, not a final result.
+      the multi-dataset path), 6 (`notebooks/colab_eval.ipynb`) and the Step 7
+      docs (`docs/datasets.md`, the README evaluation-protocol pass) are done.
+      Step 7's real-number validation (exp003 Kvasir val first, then the full
+      exp003/exp005/exp006/exp007 x dataset table) needs the Colab checkpoints
+      and remains. Everything here is single-seed and provisional, not a final
+      result.
 
 ## Decisions in force
 
@@ -1154,4 +1157,53 @@ the README pass (the README still shows the old `eval_test.json` names).
 
 Open questions (current): unchanged from the eleventh session (commit `d5508ca`
 is unpushed model code outside M8).
+
+## Session 2026-10-31 (seventeenth session) - Milestone 8, Step 7 (docs)
+
+### `docs/datasets.md` (new)
+
+Reference document for the data side of Milestone 8, six sections: (1) the data
+tree and the `DATA_ROOT` resolution order (env -> `data.data_root` -> `<repo>/data`),
+with the `data/*` gitignore rule and the `data/splits/` exception; (2) the
+registry fields and the five datasets (kvasir_seg / cvc_clinicdb / cvc_colondb
+present, etis / cvc_300 absent-unverified), stem matching; (3) the preparation
+step, the `data.npz` / `meta.json` format, idempotence, the loud-failure list and
+the cache sizes (143.5 / 60.0 / 45.2 MB); (4) zero-shot `src/evaluate.py`
+including the new `--config`; (5) `scripts/aggregate_results.py`; (6) the
+limitations (single-seed provisional, missing datasets, image-level leakage,
+zero-shot external use).
+
+### README pass to the M8 names (done)
+
+- Status header: Milestones 1-6 complete, Milestone 8 complete, Milestone 7
+  partial (was "Milestones 1-5 of 7 complete; Milestone 6 pending").
+- Layout: added `configs/datasets.yaml`, `scripts/prepare_datasets.py`,
+  `scripts/aggregate_results.py`, `src/data_registry.py`, `docs/datasets.md` and
+  `notebooks/colab_eval.ipynb`; `results/results.csv` now says
+  `(run, split, dataset, tta)`.
+- Full ablation step 4 and the results-file table: `eval_test.json` /
+  `per_image_test.csv` -> `eval_<split>_<dataset>[_ttaflip].json` /
+  `per_image_<split>_<dataset>[_ttaflip].csv`; one row per
+  `(run, split, dataset, tta)`; the aggregate row now reads config x dataset.
+- New **Evaluation protocol** section: checkpoint = Kvasir val Dice (`best.pt`),
+  the two dataset kinds (Kvasir via committed splits, external zero-shot from
+  `processed/`), the per-image Dice/IoU/MAE rules, TTA off by default, the output
+  files and the results-row key, the aggregation matrix, and the
+  single-seed-provisional caveat.
+- Roadmap updated to match.
+
+Docs-only change: no code path changed. Verification: full suite
+`.venv/bin/python -m pytest -o addopts="" -q` -> **281 passed** (unchanged;
+proves the docs edits broke nothing).
+
+Left to do for Milestone 8: Step 7's real-number validation only. It needs the
+Colab checkpoints (there are no real checkpoints on the CPU box, only the smoke
+run): first evaluate exp003 on Kvasir val and compare to the ~0.91 training-log
+value, stopping to diagnose on a mismatch; then evaluate exp003, exp005, exp006
+and exp007 on every present dataset and report the full config x dataset table,
+labelled single-seed and provisional. `notebooks/colab_eval.ipynb` runs exactly
+that flow.
+
+Open questions (current): unchanged (commit `d5508ca` is unpushed model code
+outside M8).
 

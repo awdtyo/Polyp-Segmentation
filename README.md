@@ -5,14 +5,18 @@ fusion, U-Net decoder with Multi-scale Upsampling (MSU). The full specification
 lives in [AGENTS.md](AGENTS.md); this README covers setup, layout and the data
 contract.
 
-Status: **Milestones 1-5 of 7 complete; Milestone 7 partial.** Skeleton and
-dataset preparation; ConvNeXt-Base baseline with a plain decoder, training loop
-and resume; Meta-Polyp CAFormer-S18 branch with the same decoder; dual-encoder
-fusion with concat at stages 1-2 and cross-attention at stages 3-4; paper-mode
-multi-scale upsampling links. The Colab launcher and the "Running on Colab"
-section exist (Milestone 7, partial); Milestone 6 (evaluation and results
-logging) is pending explicit approval. See [PROGRESS.md](PROGRESS.md) for the
-live checklist.
+Status: **Milestones 1-6 complete, Milestone 8 (multi-dataset evaluation)
+complete, Milestone 7 partial.** Skeleton and dataset preparation; ConvNeXt-Base
+baseline with a plain decoder, training loop and resume; Meta-Polyp
+CAFormer-S18 branch with the same decoder; dual-encoder fusion with concat at
+stages 1-2 and cross-attention at stages 3-4; paper-mode multi-scale upsampling
+links; `src/evaluate.py`, multi-seed aggregation and the
+[Full ablation](#full-ablation) section. Milestone 8 adds the dataset registry,
+`scripts/prepare_datasets.py`, zero-shot evaluation on the external datasets and
+a config x dataset matrix, all described in
+[docs/datasets.md](docs/datasets.md). Milestone 7 is **partial**: the thin Colab
+launchers and the "Running on Colab" section exist, while the final README pass
+is still to do. See [PROGRESS.md](PROGRESS.md) for the live checklist.
 
 ## Layout
 
@@ -20,10 +24,14 @@ live checklist.
 AGENTS.md              project specification (read this first)
 PROGRESS.md            milestone checklist, decisions in force, session notes
 configs/base.yaml      default experiment config
+configs/datasets.yaml  dataset registry (folders, counts, mask matching)
 data/splits/           committed split files (train/val/test .txt)
 scripts/make_splits.py  generates the split files once, with a fixed seed
 scripts/build_cache.py  resizes images/masks once into one .npz cache
+scripts/prepare_datasets.py  raw -> processed per-dataset cache (milestone 8)
+scripts/aggregate_results.py  config x dataset results matrix (milestone 8)
 src/utils.py           config loading/validation, seeding
+src/data_registry.py   dataset registry + DATA_ROOT resolution (milestone 8)
 src/datasets.py        PolypDataset, transforms
 src/metrics.py         per-image Dice and IoU
 src/losses.py          BCE+Dice, Dice, Jaccard, BCE
@@ -35,10 +43,11 @@ src/models/            encoders, fusion, decoder, MSU, net (milestones 2-5)
   decoder.py           channel alignment + U-Net decoder with optional MSU
   net.py               assembled dual/single-branch model, parameter groups
 src/train.py           training entry point (milestone 2)
-src/evaluate.py        evaluation entry point (milestone 6)
+src/evaluate.py        evaluation entry point (milestone 6); multi-dataset (milestone 8)
 tests/                 CPU tests (about 1-2 minutes)
-results/results.csv    one row per evaluated run
-notebooks/             thin Colab launcher (`colab_run.ipynb`)
+results/results.csv    one row per evaluated (run, split, dataset, tta)
+notebooks/             thin Colab launchers (`colab_run.ipynb`, `colab_eval.ipynb`)
+docs/datasets.md       data tree, registry, preparation and evaluation reference
 ```
 
 ## Setup
@@ -300,10 +309,13 @@ Procedure (AGENTS.md section 11, "Final comparison protocol"):
        --checkpoint best --results_csv <RUNS_DIR>/results.csv
    ```
 
-   This writes `eval_test.json` and `per_image_test.csv` into the run folder and
-   appends one row per `(run name, split)`. The test split is never used for
-   model selection; a duplicate row is refused unless `--force` is given, and a
-   test id that also appears in `train.txt`/`val.txt` aborts the run.
+   This writes `eval_test_kvasir_seg.json` and `per_image_test_kvasir_seg.csv`
+   into the run folder and appends one row per `(run name, split, dataset, tta)`.
+   The test split is never used for model selection; a duplicate row is refused
+   unless `--force` is given, and a test id that also appears in
+   `train.txt`/`val.txt` aborts the run. Add `--dataset <name>` (repeatable,
+   see the [Evaluation protocol](#evaluation-protocol)) to also evaluate the
+   external datasets zero-shot.
 
 5. **Aggregate the seeds:**
 
@@ -322,14 +334,60 @@ Where results go, per run folder and in the runs directory:
 | File | Contents |
 |---|---|
 | `<run>/metrics.csv` | one row per epoch: losses, val Dice/IoU, LR per group, total epoch time and its breakdown (train, val, prediction grid, best.pt save, last.pt save) |
-| `<run>/eval_test.json` | mean/std Dice and IoU, n, small-lesion Dice, provenance |
-| `<run>/per_image_test.csv` | `id, dice, iou, lesion_pixels, small_lesion` per test image |
-| `<RUNS_DIR>/results.csv` | one row per run and split (never reordered or overwritten) |
-| `<RUNS_DIR>/aggregate_results.md` / `.csv` | mean ± std across seeds, per config |
+| `<run>/eval_<split>_<dataset>[_ttaflip].json` | mean/std Dice, IoU and MAE, n, small-lesion Dice, provenance |
+| `<run>/per_image_<split>_<dataset>[_ttaflip].csv` | `id, dice, iou, mae, lesion_pixels, small_lesion` per image |
+| `<RUNS_DIR>/results.csv` | one row per `(run, split, dataset, tta)` (never reordered or overwritten) |
+| `<RUNS_DIR>/aggregate_results.md` / `.csv` | config x dataset matrix: mean ± std Dice and IoU across seeds (`n/a` for one seed) |
 
 Report mean and standard deviation over the three seeds. A single run is never
 reported as the result, and the `results/results.csv` committed in the repo is
 the header only: real rows live on Drive.
+
+## Evaluation protocol
+
+Training and model selection use train and val only. The evaluated checkpoint is
+always `best.pt`, i.e. the one chosen by **Kvasir val Dice**; the external
+datasets are never used to select or tune a checkpoint. A single run is
+evaluated with:
+
+```
+python -m src.evaluate --run_dir <run> --split test --checkpoint best \
+    --dataset kvasir_seg --dataset cvc_clinicdb --dataset cvc_colondb \
+    --results_csv <RUNS_DIR>/results.csv
+```
+
+Two kinds of dataset are read:
+
+- **Kvasir-SEG** (the training dataset, `data.dataset`) is read through the
+  committed split files, exactly as during training: `--split val` reproduces
+  the training log and `--split test` is the held-out number. A test id that
+  also appears in `train.txt`/`val.txt` aborts the run.
+- **Every other dataset** (CVC-ClinicDB, CVC-ColonDB, ETIS, CVC-300) is read
+  zero-shot from `<DATA_ROOT>/processed/<name>/data.npz`, using **all** of its
+  images, and is always recorded as `split=test`.
+
+Dice and IoU are computed **per image** on the 0.5-thresholded sigmoid output
+(strictly greater than 0.5) and then averaged; an empty ground truth with an
+empty prediction scores 1.0. MAE is the mean absolute error between the
+predicted probability map and the binary ground truth, also per image then
+averaged. Flip TTA is **off** by default; `--tta-flip` averages a horizontally
+flipped pass in probability space before thresholding and writes `*_ttaflip`
+outputs under a separate name.
+
+Each dataset writes `eval_<split>_<dataset>[_ttaflip].json` (mean/std Dice, IoU
+and MAE, n, small-lesion Dice, provenance) and
+`per_image_<split>_<dataset>[_ttaflip].csv` into the run folder, and appends one
+row per `(run, split, dataset, tta)` to the results CSV
+(`--results_csv`, default `results/results.csv`). `scripts/aggregate_results.py`
+then groups the rows by config into a config x dataset matrix of Dice and IoU
+(mean ± std over seeds, `n/a` for a single seed), plus a long-form CSV. The data
+tree, the registry, the preparation step and the per-file formats are documented
+in [docs/datasets.md](docs/datasets.md); the Colab flow is
+`notebooks/colab_eval.ipynb`.
+
+Every number produced this way is **single-seed and provisional** until the
+three-seed protocol above is run on a frozen commit; the external datasets are
+zero-shot and are reported as such.
 
 ## Reproducibility rules
 
@@ -374,6 +432,12 @@ measurements: no VRAM number is claimed.
 Milestones 1-6 are complete. Milestone 6 added `src/evaluate.py`, the
 multi-seed aggregation script, the seed/Colab wiring, the evaluation,
 aggregation and seed tests, and the [Full ablation](#full-ablation) section
-above. Milestone 7 is **partial**: the thin Colab launcher
-(`notebooks/colab_run.ipynb`) and the README section are in place, while the
-final README pass is still to do. See [PROGRESS.md](PROGRESS.md).
+above. Milestone 8 (multi-dataset evaluation) added the dataset registry
+(`configs/datasets.yaml`, `src/data_registry.py`), `scripts/prepare_datasets.py`,
+zero-shot evaluation of the external datasets, the config x dataset aggregation
+matrix and `notebooks/colab_eval.ipynb`, all documented in
+[docs/datasets.md](docs/datasets.md) and the
+[Evaluation protocol](#evaluation-protocol) section. Milestone 7 is **partial**:
+the thin Colab launcher (`notebooks/colab_run.ipynb`) and the "Running on Colab"
+section are in place, while the final README pass is still to do. See
+[PROGRESS.md](PROGRESS.md).
