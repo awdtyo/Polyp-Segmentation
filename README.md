@@ -75,6 +75,22 @@ defaults to `false`; `decoder.msu_mode: paper` is implemented as D4 x4 into D2
 and D3 x4 into D1. `released` is accepted by config validation but the builder
 raises `NotImplementedError` because that variant is deliberately reserved.
 
+| Config | Encoder(s) | Fusion | MSU | Purpose |
+|---|---|---|---|---|
+| `base.yaml` | dual | hybrid | off | defaults for new experiments |
+| `exp001_convnext_base_baseline.yaml` | ConvNeXt-Base | `single_a` | off | ConvNeXt baseline; first T4 probe |
+| `exp002_convnext_small_baseline.yaml` | ConvNeXt-Small | `single_a` | off | fallback if ConvNeXt-Base runs out of memory on a T4 |
+| `exp003_caformer_s18_baseline.yaml` | CAFormer-S18 | `single_b` | off | Meta-Polyp encoder baseline (pretrained) |
+| `exp004_caformer_s18_scratch.yaml` | CAFormer-S18 | `single_b` | off | from-scratch extra baseline |
+| `exp005_hybrid_fusion.yaml` | dual | `hybrid` | off | hybrid fusion (concat S1-S2, xattn S3-S4) |
+| `exp006_all_concat.yaml` | dual | `all_concat` | off | all-concat ablation |
+| `exp007_hybrid_msu.yaml` | dual | `hybrid` | `paper` | hybrid fusion + MSU |
+| `exp008_convnext_base_lr1e4.yaml` | ConvNeXt-Base | `single_a` | off | fair-tuning check for the ConvNeXt baseline |
+
+`exp008` is identical to `exp001` except `run.name` and `train.lr_convnext`
+(`1.0e-4` instead of `3.0e-5`), so the ConvNeXt baseline can be compared with
+`exp003` at the same encoder learning rate. `exp001` is left untouched.
+
 ## Data contract
 
 The project dataset is **Kvasir-SEG**: 1000 2D RGB colonoscopy images with 1000
