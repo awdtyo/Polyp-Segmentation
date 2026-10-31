@@ -11,6 +11,7 @@ import torch
 import yaml
 
 from src import utils
+from src.data_registry import DEFAULT_DATA_ROOT, get_spec
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -251,3 +252,34 @@ def test_set_seed_different_seed_differs() -> None:
     second = np.random.rand(3)
 
     assert not np.array_equal(first, second)
+
+
+def test_load_config_resolves_data_root_from_the_registry() -> None:
+    """A config that leaves the layout keys at their defaults gets them resolved."""
+    cfg = utils.load_config(REPO_ROOT / "configs" / "base.yaml")
+    spec = get_spec("kvasir_seg")
+
+    assert cfg["data"]["root"] == str(spec.raw_dir(DEFAULT_DATA_ROOT))
+    assert cfg["data"]["image_dir"] == spec.image_subdir
+    assert cfg["data"]["mask_dir"] == spec.mask_subdir
+    assert cfg["data"]["mask_suffix"] == spec.mask_suffix
+
+
+def test_load_config_keeps_an_explicit_root_override(tmp_path: Path) -> None:
+    """An explicit root (e.g. synthetic test data) is never rewritten."""
+    path = write_yaml(tmp_path / "exp.yaml", {"data": {"root": "/tmp/elsewhere"}})
+    cfg = utils.load_config(path)
+
+    assert cfg["data"]["root"] == "/tmp/elsewhere"
+
+
+def test_load_config_unknown_dataset_raises(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "exp.yaml", {"data": {"dataset": "not_a_dataset"}})
+    with pytest.raises(utils.ConfigError, match="not_a_dataset"):
+        utils.load_config(path)
+
+
+def test_data_root_must_be_a_string(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "exp.yaml", {"data": {"data_root": 5}})
+    with pytest.raises(utils.ConfigError, match="data.data_root"):
+        utils.load_config(path)

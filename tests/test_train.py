@@ -41,6 +41,7 @@ from src.train import (
     train_one_epoch,
     write_run_info,
 )
+from src.data_registry import DEFAULT_DATA_ROOT, get_spec
 from src.utils import load_config, save_config, set_seed
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -276,7 +277,10 @@ def test_run_info_records_provenance(tmp_path: Path) -> None:
     assert info["params_total"] > 0
     assert info["params_trainable"] == info["params_total"]
     assert "git_commit" in info and "git_dirty" in info
-    assert info["data_root"] == "data/raw"
+    # load_config resolves data.root from the dataset registry in
+    # configs/datasets.yaml (Milestone 8, Step 0), so the recorded root is the
+    # resolved raw folder for the config's dataset, not the literal YAML value.
+    assert info["data_root"] == str(get_spec("kvasir_seg").raw_dir(DEFAULT_DATA_ROOT))
     assert info["data_format"]["cache_path"] == str(cache)
     assert info["data_format"]["cache_sha256"] == hashlib.sha256(b"synthetic-cache-bytes").hexdigest()
 

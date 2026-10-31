@@ -1,0 +1,70 @@
+# Dataset registry (Milestone 8).
+#
+# DATA_ROOT is the root of the data tree. It is resolved, in order, from
+#   1. the DATA_ROOT environment variable,
+#   2. data.data_root in an experiment config,
+#   3. <repo>/data            (the default).
+# Under that root the layout is fixed:
+#   <DATA_ROOT>/raw/<folder>        raw images and masks, exactly as shipped
+#   <DATA_ROOT>/processed/<name>    prepared cache (data.npz + meta.json)
+#
+# File-matching rule: an image and a mask are a pair when their file stems are
+# equal after the optional `mask_suffix` is stripped from the mask stem. The
+# extensions may differ (e.g. .tif images with .png masks) and are discovered
+# from disk, never assumed.
+#
+# `expected_count` is the published size of the dataset. A mismatch between the
+# number of pairs found on disk and expected_count is reported loudly and is
+# never silently fixed.
+#
+# Presence: a dataset that is not on disk is skipped with a warning by the prep
+# and evaluation tools. It is only an error when that dataset is requested by
+# name. `kvasir_seg` is the training set; the other four are zero-shot
+# (external) evaluation sets.
+
+datasets:
+  # 1000 2D RGB colonoscopy images, the only dataset used for training.
+  # Verified on 2026-10-29 and 2026-10-31: images/*.jpg, masks/*.jpg, identical
+  # stems (1000/1000); masks are grayscale JPEG and are binarised at >127.
+  - name: kvasir_seg
+    folder: kvasir_seg
+    expected_count: 1000
+    image_subdir: images
+    mask_subdir: masks
+    mask_suffix: ""
+
+  # 612 images; images/*.png, masks/*.png with identical stems (612/612).
+  - name: cvc_clinicdb
+    folder: cvc_clinicdb
+    expected_count: 612
+    image_subdir: images
+    mask_subdir: masks
+    mask_suffix: ""
+
+  # 380 images; images/*.png, masks/*.png with identical stems (380/380).
+  # The raw folder also carries an unrelated output/output.txt.
+  - name: cvc_colondb
+    folder: cvc_colondb
+    expected_count: 380
+    image_subdir: images
+    mask_subdir: masks
+    mask_suffix: ""
+
+  # Not on disk yet. Expected at <DATA_ROOT>/raw/etis. The published layout is
+  # images/ + masks/; it must be confirmed against the real download before the
+  # count is trusted.
+  - name: etis
+    folder: etis
+    expected_count: 196
+    image_subdir: images
+    mask_subdir: masks
+    mask_suffix: ""
+
+  # Not on disk yet. Expected at <DATA_ROOT>/raw/cvc_300. Layout unverified, as
+  # for etis above.
+  - name: cvc_300
+    folder: cvc_300
+    expected_count: 60
+    image_subdir: images
+    mask_subdir: masks
+    mask_suffix: ""

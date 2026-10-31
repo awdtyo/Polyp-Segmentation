@@ -29,6 +29,11 @@ Last updated: 2026-10-31.
       on Colab. **Partial**: launcher (streaming output, `REF`, `RUN_SUFFIX`,
       `GRAD_ACCUM`) and the README section are in place; the final README pass
       is still to do.
+- [ ] 8. Multi-dataset evaluation (user-specified, outside AGENTS.md section 9):
+      zero-shot evaluation of the Kvasir-trained checkpoints on Kvasir-SEG test
+      plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Step 0
+      (dataset registry + `DATA_ROOT` resolution) is done; Steps 1-7 remain.
+      Everything here is single-seed and provisional, not a final result.
 
 ## Decisions in force
 
@@ -799,3 +804,71 @@ the bar. Not run on Colab itself.
 - Approve or reject the three speed proposals above; none is implemented.
 - Should the skipped-step scheduler advance be fixed? It changes the LR curve by
   one step out of tens of thousands.
+
+## Session 2026-10-31 (eleventh session) - Milestone 8, Step 0
+
+Milestone 8 (multi-dataset evaluation) is user-specified work outside AGENTS.md
+section 9. Rules for it: do not change training code, model code or the Kvasir
+800/100/100 split; never select checkpoints or tune on the external datasets
+(selection stays Kvasir val Dice); all numbers are single-seed and provisional.
+
+### Step 0: dataset registry and `DATA_ROOT` resolution (done)
+
+What the raw data actually is (inspected, not assumed). `<repo>/data/raw` is a
+symlink to `../../../dataset/Kvasir-SEG/Kvasir-SEG`, and under it sit one folder
+per dataset:
+
+| dataset | folder | layout | pairs | expected |
+|---|---|---|---|---|
+| Kvasir-SEG | `data/raw/kvasir_seg` | `images/*.jpg`, `masks/*.jpg` | 1000/1000 | 1000 |
+| CVC-ClinicDB | `data/raw/cvc_clinicdb` | `images/*.png`, `masks/*.png` | 612/612 | 612 |
+| CVC-ColonDB | `data/raw/cvc_colondb` | `images/*.png`, `masks/*.png` | 380/380 | 380 |
+| ETIS-LaribPolypDB | `data/raw/etis` | absent | - | 196 |
+| CVC-300 | `data/raw/cvc_300` | absent | - | 60 |
+
+No count mismatch for the three present datasets. Masks share the image stem
+with no `_mask` suffix; external images are `.png` while Kvasir is `.jpg`/`.jpg`,
+so pairing is by stem with the extension discovered from disk.
+
+Changes:
+
+- `configs/datasets.yaml` (new): the registry. Five entries with name, folder,
+  expected count, `image_subdir`/`mask_subdir`/`mask_suffix`, plus the
+  `DATA_ROOT` resolution and stem-matching rules in a header comment.
+- `src/data_registry.py` (new): `DatasetSpec` (`raw_dir`, `processed_dir`,
+  `image_dir`, `mask_dir`, `is_present`), `load_registry`, `registry_names`,
+  `get_spec`, `resolve_data_root` (env `DATA_ROOT` > `data.data_root` >
+  `<repo>/data`), `data_root_from_config`, `present_datasets`, `RegistryError`.
+  A missing dataset is reported as absent, never as an error.
+- `src/utils.py`: `data.dataset` and `data.data_root` defaults; `load_config`
+  now calls `_apply_data_registry`, which sets `data.root` to the registry raw
+  folder and fills `image_dir`/`mask_dir`/`mask_suffix` from the registry entry.
+  A layout key is rewritten only while it still holds its default, so an
+  explicit root (synthetic smoke data, a Colab config) is never touched. This
+  keeps `src/train.py` unchanged. `validate_config` gained the two new keys.
+  Side effect: `run_info.json`'s `data_root` now records the resolved absolute
+  raw folder instead of the literal `data/raw`; the provenance test was updated
+  to match.
+- `tests/test_data_registry.py` (new, 16 tests) and 4 new tests in
+  `tests/test_utils.py`; `tests/test_train.py` provenance assertion updated.
+
+Verification: `.venv/bin/python -m pytest -o addopts="" -q` -> **256 passed**
+(was 236; +16 registry, +4 config-wiring, and the provenance test now asserts
+the resolved root). `data/` is already gitignored (`.gitignore: data/*`, with
+`data/splits/` re-included); `git check-ignore data/raw` confirms it. The three
+present datasets resolve to their real folders; `etis` and `cvc_300` report
+absent.
+
+Left to do for Milestone 8: Step 1 (report + plan), Step 2
+(`scripts/prepare_datasets.py` -> `data/processed/<name>/{data.npz,meta.json}`),
+Step 3 (`src/evaluate.py` multi-dataset), Step 4 (`aggregate_results.py` matrix),
+Step 5 (tests), Step 6 (Colab cells), Step 7 (validation; exp003 Kvasir val
+first), `docs/datasets.md` and the results table.
+
+Open questions (current):
+
+- Commit `d5508ca` ("fusion: add the xattn_swap preset and the exp013 config")
+  is model code outside the Milestone 8 scope and is on local `main`, one commit
+  ahead of `origin/main` (`179aad7`). Keep it, or leave it unpushed until after
+  Milestone 8? It was not created by this session's Milestone 8 work.
+

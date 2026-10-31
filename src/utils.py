@@ -20,6 +20,8 @@ import numpy as np
 import torch
 import yaml
 
+from src.data_registry import RegistryError, get_spec, resolve_data_root
+
 #: ImageNet statistics, shared by both encoder branches (see AGENTS.md section 3).
 IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
 IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
@@ -56,8 +58,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "out_dir": "runs",
     },
     "data": {
-        # TODO(dataset): the concrete dataset is not chosen yet - see README
-        # "Open questions". These keys describe the folder layout only.
+        # Which dataset this run uses (a name from configs/datasets.yaml) and the
+        # data-tree root. Both are resolved in load_config: the root comes from
+        # $DATA_ROOT > data_root > <repo>/data, and then root/image_dir/mask_dir/
+        # mask_suffix are taken from the registry entry for `dataset`. The values
+        # below are the defaults that mean "not set"; an explicit value in a
+        # config (or override) is kept as written.
+        "dataset": "kvasir_seg",
+        "data_root": "",
         "root": "data/raw",
         "image_dir": "images",
         "mask_dir": "masks",
@@ -159,6 +167,7 @@ def load_config(path: str | Path, overrides: Mapping[str, Any] | None = None) ->
     if overrides is not None:
         resolved = _deep_merge(resolved, overrides)
 
+    _apply_data_registry(resolved)
     validate_config(resolved)
     return resolved
 
@@ -180,6 +189,44 @@ def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[st
         else:
             merged[key] = copy.deepcopy(value)
     return merged
+
+
+def _apply_data_registry(cfg: dict[str, Any]) -> None:
+    """Resolve ``data.root`` and the layout keys from the dataset registry.
+
+    Runs after the config and any overrides are merged and before validation, and
+    mutates ``cfg`` in place. The data-tree root is resolved as
+    ``$DATA_ROOT`` > ``data.data_root`` > ``<repo>/data``; the run's dataset is
+    looked up in ``configs/datasets.yaml``.
+
+    A layout key is rewritten only while it still holds its
+    :data:`DEFAULT_CONFIG` value, so a value set explicitly in a config or an
+    override (e.g. a synthetic-data root in a test, or a Colab session config) is
+    left untouched.
+
+    Args:
+        cfg: Merged config, mutated in place.
+
+    Raises:
+        ConfigError: if ``data.dataset`` is not in the registry.
+    """
+    data = cfg["data"]
+    defaults = DEFAULT_CONFIG["data"]
+    dataset = str(data.get("dataset", defaults["dataset"]))
+    try:
+        spec = get_spec(dataset)
+    except RegistryError as exc:
+        raise ConfigError(str(exc)) from exc
+    data_root = resolve_data_root(str(data.get("data_root", "")))
+    derived = {
+        "root": str(spec.raw_dir(data_root)),
+        "image_dir": spec.image_subdir,
+        "mask_dir": spec.mask_subdir,
+        "mask_suffix": spec.mask_suffix,
+    }
+    for key, value in derived.items():
+        if data.get(key) == defaults[key]:
+            data[key] = value
 
 
 def validate_config(cfg: Mapping[str, Any]) -> None:
@@ -222,9 +269,11 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         problems.append("data.image_size must be a positive int")
     elif size % 32 != 0:
         problems.append(f"data.image_size must be divisible by 32, got {size}")
-    for key in ("root", "image_dir", "mask_dir", "split_dir", "image_ext", "mask_ext"):
+    for key in ("dataset", "root", "image_dir", "mask_dir", "split_dir", "image_ext", "mask_ext"):
         if not isinstance(data[key], str) or not data[key]:
             problems.append(f"data.{key} must be a non-empty string")
+    if not isinstance(data["data_root"], str):
+        problems.append("data.data_root must be a string ('' means the default root)")
     if not isinstance(data["mask_suffix"], str):
         problems.append("data.mask_suffix must be a string")
     if not isinstance(data["cache_path"], str):
