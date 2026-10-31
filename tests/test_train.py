@@ -10,8 +10,10 @@ data, no downloads, no full training.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -643,3 +645,80 @@ def test_real_run_resumes_from_last_checkpoint(
     info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
     assert info["synth_data"] is True
     assert yaml.safe_load((run_dir / "config_resolved.yaml").read_text(encoding="utf-8"))["train"]["epochs"] == 2
+
+
+class _BrokenStream:
+    """A stdout stand-in whose writes fail like a closed Colab output pipe.
+
+    Args:
+        fail_on: Line prefixes that raise ``BrokenPipeError``. An empty tuple
+            behaves like a working stream and records what was written.
+
+    Attributes:
+        written: Every line written successfully.
+        fail_on: Prefixes that trigger a failure.
+    """
+
+    def __init__(self, *, fail_on: tuple[str, ...] = ()) -> None:
+        self.written: list[str] = []
+        self.fail_on = fail_on
+
+    def write(self, text: str) -> int:
+        if any(text.startswith(prefix) for prefix in self.fail_on):
+            raise BrokenPipeError(32, "Broken pipe")
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation("no fileno")
+
+
+class _BrokenFlushStream(_BrokenStream):
+    """A stream whose ``flush`` fails, like stdout at interpreter shutdown."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+def test_emit_returns_false_when_the_stream_is_closed() -> None:
+    """A log line must report failure instead of raising on a closed pipe."""
+    stream = _BrokenStream(fail_on=("[end-of-run]",))
+
+    assert train_mod._emit("[end-of-run] summary: start", stream=stream) is False
+    assert train_mod._emit("epoch 0: train 1.0", stream=stream) is True
+
+
+def test_flush_std_streams_survives_a_closed_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shutdown flush must not raise, so main()'s exit code stands."""
+    monkeypatch.setattr(sys, "stdout", _BrokenFlushStream())
+    monkeypatch.setattr(sys, "stderr", _BrokenFlushStream())
+
+    train_mod._flush_std_streams()
+
+
+def test_end_of_run_prints_do_not_change_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stdout that dies at the end of a run must not fail a finished run.
+
+    This is the Colab exp001 shape: every epoch is in ``metrics.csv``, both
+    checkpoints exist, and the process still exits non-zero because a log line
+    hit a closed output pipe.
+    """
+    monkeypatch.chdir(tmp_path)
+    stream = _BrokenStream(fail_on=("[end-of-run]", "done. best val dice"))
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    out_root = tmp_path / "runs"
+    exit_code = train_mod.main(
+        ["--config", str(BASELINE_CONFIG), "--smoke", "--out-dir", str(out_root)]
+    )
+
+    assert exit_code == 0
+    run_dir = out_root / "exp001_convnext_base_baseline_smoke"
+    for name in ("metrics.csv", "last.pt", "best.pt", "run_info.json"):
+        assert (run_dir / name).is_file(), f"missing {name}"
+    assert "epoch 0: train" in "".join(stream.written)

@@ -21,15 +21,17 @@ import argparse
 import copy
 import csv
 import hashlib
+import io
 import json
 import math
+import os
 import random
 import subprocess
 import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import IO, Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import timm
@@ -74,6 +76,53 @@ _WARNED_LEGACY_HEADERS: set[str] = set()
 EXIT_REQUIRED_STEP_FAILED: int = 3
 
 
+def _emit(message: str, *, stream: IO[str] | None = None) -> bool:
+    """Print one log line without letting a dead std stream fail the run.
+
+    On Colab (and in any pipe) the reading end can disappear: closing the
+    browser tab, a kernel that stopped draining output, or a shell pipeline
+    whose consumer exited. ``print`` then raises ``BrokenPipeError``. A log
+    line must never turn a finished run into a non-zero exit code, so the
+    end-of-run prints go through here.
+
+    Args:
+        message: The line to print.
+        stream: Target stream; defaults to ``sys.stdout`` at call time, so a
+            monkeypatched stream is used.
+
+    Returns:
+        ``True`` if the line was written, ``False`` if the stream was gone.
+    """
+    target = sys.stdout if stream is None else stream
+    try:
+        print(message, file=target, flush=True)
+    except (BrokenPipeError, OSError):
+        return False
+    return True
+
+
+def _flush_std_streams() -> None:
+    """Flush stdout/stderr, neutralising a stream whose pipe has been closed.
+
+    Python flushes ``sys.stdout`` while shutting down; if the reading end is
+    gone that flush fails and the interpreter exits with code 120 instead of the
+    code ``main()`` returned. Flushing here (inside our own control flow, before
+    ``SystemExit``) lets the failure be swallowed and the real exit code stand.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (BrokenPipeError, OSError):
+            try:
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, stream.fileno())
+                os.close(devnull)
+            except (BrokenPipeError, OSError, ValueError, AttributeError, io.UnsupportedOperation):
+                # No usable file descriptor (e.g. a StringIO in tests); nothing
+                # more can be done, and the exit code must still be the run's.
+                pass
+
+
 class PostTrainingStepError(RuntimeError):
     """A required end-of-run step failed, so the process must exit non-zero.
 
@@ -110,25 +159,30 @@ def run_post_step(name: str, fn: Callable[[], Any], *, required: bool) -> Any:
     Returns:
         Whatever ``fn`` returned, or ``None`` when an optional step failed.
     """
-    print(f"[end-of-run] {name}: start", flush=True)
+    _emit(f"[end-of-run] {name}: start")
     try:
         result = fn()
     except Exception as exc:  # noqa: BLE001 - every step failure must be reported
-        print(f"[end-of-run] {name}: FAILED ({type(exc).__name__}: {exc})", flush=True)
+        _emit(f"[end-of-run] {name}: FAILED ({type(exc).__name__}: {exc})")
         if required:
-            traceback.print_exc()
-            sys.stderr.flush()
+            try:
+                traceback.print_exc()
+                sys.stderr.flush()
+            except (BrokenPipeError, OSError):  # pragma: no cover - dead stderr
+                pass
             raise PostTrainingStepError(name) from exc
-        print(
+        _emit(
             f"WARNING: optional end-of-run step '{name}' failed; "
             "the run is still complete and the exit code is unchanged.",
-            file=sys.stderr,
-            flush=True,
+            stream=sys.stderr,
         )
-        traceback.print_exc(file=sys.stderr)
-        sys.stderr.flush()
+        try:
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+        except (BrokenPipeError, OSError):  # pragma: no cover - dead stderr
+            pass
         return None
-    print(f"[end-of-run] {name}: done", flush=True)
+    _emit(f"[end-of-run] {name}: done")
     return result
 
 
@@ -1306,12 +1360,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         print("interrupted; last.pt holds the last completed epoch", file=sys.stderr)
         return 130
     except PostTrainingStepError as exc:
-        print(
+        _emit(
             f"ERROR: {exc}. The run stopped after a successful epoch but the "
             "checkpoint on disk may be stale or incomplete; check free space "
             "and that the run folder is writable.",
-            file=sys.stderr,
-            flush=True,
+            stream=sys.stderr,
         )
         exit_code = EXIT_REQUIRED_STEP_FAILED
     finally:
@@ -1329,11 +1382,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_post_step("cleanup: wandb.finish", lambda: _finish_wandb(cfg), required=False)
     run_post_step(
         "summary",
-        lambda: print(f"done. best val dice {best_val_dice:.4f}; see {metrics_path}", flush=True),
+        lambda: _emit(f"done. best val dice {best_val_dice:.4f}; see {metrics_path}"),
         required=False,
     )
     return exit_code
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _exit_code = main()
+    _flush_std_streams()
+    raise SystemExit(_exit_code)
