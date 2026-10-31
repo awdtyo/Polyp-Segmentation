@@ -253,3 +253,23 @@ what was decided and what it replaced.
   `norm: batch | group` switch was not implemented; BatchNorm remains in channel
   alignment, concat fusion, the decoder conv blocks and the head norm.
   Milestones 6-7 remain pending explicit approval.
+- **2026-10-31 - Milestone 6 approved.** `src/evaluate.py`,
+  `scripts/aggregate_results.py`, the seed/Colab wiring, the evaluation and
+  aggregation tests, and the README ablation section are approved. Milestone 7
+  (the final README pass) stays partial and separate.
+- **2026-10-31 - exp008 is a 5-epoch probe that may replace exp001.** exp008
+  (`configs/exp008_convnext_base_lr1e4.yaml`, ConvNeXt-Base at
+  `train.lr_convnext: 1.0e-4`) is run as a 5-epoch probe on the committed split.
+  If it clearly beats exp001 on best val Dice, exp008 replaces exp001 as the
+  ConvNeXt baseline in the final ablation table; exp001 is then kept only as the
+  3e-5 reference. If it does not clearly beat exp001, exp001 stays the baseline.
+  "Clearly beats" means a gain larger than the seed-to-seed spread seen in the
+  probes; no numeric threshold is claimed before those numbers exist.
+- **2026-10-31 - Final comparison protocol.** Every final run uses one epoch
+  count N, chosen once from the 30-epoch validation curves (not per config),
+  three seeds (42, 43, 44), the same committed split, the same batch size, the
+  same image size, and a frozen commit (a git tag such as `ablation-v1`). The
+  test split is evaluated once at the end with
+  `python -m src.evaluate --run_dir <run> --split test` and is never used for
+  model selection. `scripts/aggregate_results.py` groups the seeds per config and
+  reports mean and std; a single run is never reported as the result.

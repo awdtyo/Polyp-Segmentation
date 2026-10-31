@@ -19,9 +19,9 @@ Last updated: 2026-10-31.
 - [x] 5. MSU links on and off.
 - [ ] 6. `evaluate.py`, results logging, and ablation configs for: A only,
       B only, all concat, hybrid fusion, hybrid fusion + MSU, hybrid fusion
-      without MSU. **Not started**: `src/evaluate.py` is still a stub and
-      `results/results.csv` is header-only; the ablation configs exist. Needs
-      explicit approval.
+      without MSU. **Approved 2026-10-31, in progress**: the ablation configs
+      exist; `evaluate.py`, the aggregation script, seed wiring and tests are
+      being added in this session.
 - [ ] 7. `notebooks/colab_run.ipynb` launcher and a README section on running
       on Colab. **Partial**: launcher (streaming output, `REF`, `RUN_SUFFIX`,
       `GRAD_ACCUM`) and the README section are in place; the final README pass
@@ -56,8 +56,15 @@ version:
 - Pretrained timm downloads are Colab-only; tests and smoke runs stay
   `pretrained: false`.
 - The upstream 880/120 split comparison is deferred, not cancelled.
-- Milestone 5 (MSU) is complete. Milestone 6 is pending explicit approval;
-  Milestone 7 is partial (launcher and README section exist).
+- Milestone 6 is approved and in progress (evaluate, aggregation, seeds, tests,
+  README ablation section). Milestone 7 is partial (launcher and README section
+  exist).
+- exp008 is a 5-epoch probe: if it clearly beats exp001, it replaces exp001 as
+  the ConvNeXt baseline in the final ablations; otherwise exp001 stays.
+- Final protocol: one epoch count N for every run (chosen from the 30-epoch
+  validation curves), seeds 42/43/44, same committed split, batch size, image
+  size and frozen commit (tag `ablation-v1`). Test split evaluated once at the
+  end only.
 
 ## Session 2026-10-29 (first session)
 
