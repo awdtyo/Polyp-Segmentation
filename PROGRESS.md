@@ -1196,13 +1196,26 @@ Docs-only change: no code path changed. Verification: full suite
 `.venv/bin/python -m pytest -o addopts="" -q` -> **281 passed** (unchanged;
 proves the docs edits broke nothing).
 
+### Local pipeline validation (done here)
+
+- Full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **281 passed**.
+- Real prepared data is readable through the registry (`resolve_data_root` ->
+  `<repo>/data`): `kvasir_seg` 1000, `cvc_clinicdb` 612, `cvc_colondb` 380, all
+  images `(N, 256, 256, 3)` and masks `(N, 256, 256)` with values `{0, 1}` and
+  counts matching `expected_count`.
+- No real checkpoint exists on the CPU box: the only run folder is
+  `runs/exp001_convnext_base_baseline_smoke`, and its `config_resolved.yaml`
+  predates the `model.msu` -> `decoder.msu` rename, so `load_config` rejects it
+  (`ConfigError: unknown keys in 'model': ['msu', 'msu_mode']`) and
+  `src/evaluate.py` cannot rebuild that model. A real end-to-end evaluate needs
+  a fresh checkpoint from Colab.
+
 Left to do for Milestone 8: Step 7's real-number validation only. It needs the
-Colab checkpoints (there are no real checkpoints on the CPU box, only the smoke
-run): first evaluate exp003 on Kvasir val and compare to the ~0.91 training-log
-value, stopping to diagnose on a mismatch; then evaluate exp003, exp005, exp006
-and exp007 on every present dataset and report the full config x dataset table,
-labelled single-seed and provisional. `notebooks/colab_eval.ipynb` runs exactly
-that flow.
+Colab checkpoints: first evaluate exp003 on Kvasir val and compare to the ~0.91
+training-log value, stopping to diagnose on a mismatch; then evaluate exp003,
+exp005, exp006 and exp007 on every present dataset and report the full config x
+dataset table, labelled single-seed and provisional.
+`notebooks/colab_eval.ipynb` runs exactly that flow.
 
 Open questions (current): unchanged (commit `d5508ca` is unpushed model code
 outside M8).
