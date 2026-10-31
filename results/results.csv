@@ -1,1 +1,1 @@
-run_name,split,config_file,git_commit,seed,epochs,params_m,best_val_dice,test_dice,test_iou,small_lesion_dice,mean_epoch_time_s,peak_gpu_mem_mb
+run_name,split,dataset,tta,config_file,git_commit,seed,epochs,params_m,best_val_dice,test_dice,test_iou,test_mae,small_lesion_dice,mean_epoch_time_s,peak_gpu_mem_mb

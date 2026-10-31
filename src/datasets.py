@@ -111,14 +111,19 @@ def read_split(split_file: str | Path) -> list[str]:
 
 
 class PolypDataset(Dataset):
-    """Binary polyp segmentation dataset driven by a split file.
+    """Binary polyp segmentation dataset driven by a split file or an id list.
 
     Args:
-        split_file: Text file with one sample id per line.
+        split_file: Text file with one sample id per line. May be ``None`` when
+            ``ids`` is given instead.
         root: Dataset root directory; image and mask folders live under it.
         transform: Optional augmentation callable (see :data:`Transform`).
         image_size: Output spatial size (square). Must be divisible by 32 in
             practice, because the encoders downsample by 32.
+        ids: Optional explicit sample ids, used instead of ``split_file``. This
+            is how an external dataset prepared by ``scripts/prepare_datasets.py``
+            (all images, no split file) is read. Exactly one of ``split_file``
+            and ``ids`` must be provided.
         image_dir: Sub-folder of ``root`` holding images.
         mask_dir: Sub-folder of ``root`` holding masks.
         image_ext: Image file extension, e.g. ``".jpg"``.
@@ -138,11 +143,12 @@ class PolypDataset(Dataset):
 
     def __init__(
         self,
-        split_file: str | Path,
-        root: str | Path,
+        split_file: str | Path | None = None,
+        root: str | Path = ".",
         transform: Transform | None = None,
         image_size: int = 256,
         *,
+        ids: Sequence[str] | None = None,
         image_dir: str = "images",
         mask_dir: str = "masks",
         image_ext: str = ".jpg",
@@ -154,7 +160,9 @@ class PolypDataset(Dataset):
         mean: Sequence[float] = IMAGENET_MEAN,
         std: Sequence[float] = IMAGENET_STD,
     ) -> None:
-        self.split_file = Path(split_file)
+        if (split_file is None) == (ids is None):
+            raise ValueError("PolypDataset needs exactly one of split_file or ids")
+        self.split_file = Path(split_file) if split_file is not None else None
         self.root = Path(root)
         self.transform = transform
         self.image_size = int(image_size)
@@ -174,7 +182,13 @@ class PolypDataset(Dataset):
         if len(mean) != 3 or len(std) != 3:
             raise ValueError("mean and std must each have 3 values")
 
-        self.ids: list[str] = read_split(self.split_file)
+        if ids is not None:
+            self.ids = [str(sample_id) for sample_id in ids]
+            if len(set(self.ids)) != len(self.ids):
+                raise ValueError("ids must be unique")
+        else:
+            assert self.split_file is not None  # guarded above
+            self.ids = read_split(self.split_file)
 
         self._cache_images: np.ndarray | None = None
         self._cache_masks: np.ndarray | None = None

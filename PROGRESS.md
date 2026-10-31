@@ -31,11 +31,11 @@ Last updated: 2026-10-31.
       is still to do.
 - [ ] 8. Multi-dataset evaluation (user-specified, outside AGENTS.md section 9):
       zero-shot evaluation of the Kvasir-trained checkpoints on Kvasir-SEG test
-      plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Step 0
-      (dataset registry + `DATA_ROOT` resolution) and Step 2
-      (`scripts/prepare_datasets.py`, run on the real data) are done; Steps 1,
-      3-7 remain. Everything here is single-seed and provisional, not a final
-      result.
+      plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Steps 0
+      (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
+      (`scripts/prepare_datasets.py`, run on the real data) and 3 (multi-dataset
+      `src/evaluate.py`) are done; Steps 4-7 remain. Everything here is
+      single-seed and provisional, not a final result.
 
 ## Decisions in force
 
@@ -953,6 +953,60 @@ Left to do for Milestone 8: Step 3 (`src/evaluate.py` multi-dataset: per-(run,
 dataset) files/rows, `dataset` column in `results/results.csv`, optional flip
 TTA off by default), Step 4 (`aggregate_results.py` config x dataset matrix),
 Step 5 (missing-dataset skip vs explicit-request failure, evaluate smoke, val
+reproduction within tolerance), Step 6 (`notebooks/colab_eval.ipynb`), Step 7
+(validation; exp003 Kvasir val first, then the full table), `docs/datasets.md`
+and the evaluation-protocol section.
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (thirteenth session) - Milestone 8, Step 3
+
+### Step 3: multi-dataset `src/evaluate.py` (done)
+
+`src/evaluate.py` now evaluates one run on one or more datasets and writes one
+result per `(run_name, split, dataset, tta)`. The single-dataset interface
+(`--run_dir`, `--split`, `--checkpoint`, `--results_csv`, `--force`) is kept; new
+flags are `--dataset NAME` (repeatable, default `kvasir_seg`) and `--tta-flip`
+(off by default).
+
+- Loaders: the training dataset (`data.dataset`, `kvasir_seg`) is read through
+  the committed split files exactly as before, so its `val` Dice reproduces the
+  training log (`build_split_loader`). Every other dataset is read zero-shot
+  from `<DATA_ROOT>/processed/<name>/data.npz` with all of its images
+  (`build_processed_loader`); a missing npz fails loudly and prints the
+  `scripts/prepare_datasets.py --dataset NAME` fix. `resolve_datasets` rejects an
+  unknown name (exit 2). External datasets are always recorded as `split=test`
+  whatever `--split` says.
+- Metrics: Dice and IoU per image at the fixed 0.5-threshold on the sigmoid
+  output, then averaged (unchanged convention). MAE is added (probability map
+  vs. binary ground truth, per image then averaged). Flip TTA is optional: the
+  flipped pass is undone and the two maps are averaged in probability space
+  before thresholding. Small-lesion Dice is still reported.
+- Outputs per dataset, inside the run folder: `eval_<split>_<dataset>.json` and
+  `per_image_<split>_<dataset>.csv` (`id, dice, iou, mae, lesion_pixels,
+  small_lesion`). A TTA run adds `_ttaflip` so it never overwrites a plain run.
+- `results/results.csv` gained the header
+  `run_name,split,dataset,tta,config_file,git_commit,seed,epochs,params_m,
+  best_val_dice,test_dice,test_iou,test_mae,small_lesion_dice,mean_epoch_time_s,
+  peak_gpu_mem_mb`; duplicate key is `(run_name, split, dataset, tta)`.
+- `src/datasets.py`: `PolypDataset` now takes exactly one of `split_file=` or
+  `ids=` so an external dataset with no split file can be read from its cache.
+  Training paths are untouched (`from_config` still passes `split_file=`).
+- `tests/test_evaluate.py`: rewritten for the new file names; 5 new tests (TTA
+  suffix, TTA and plain rows coexisting, zero-shot external dataset via a
+  monkeypatched `DATA_ROOT`, missing-processed-dataset loud failure, unknown
+  dataset usage error).
+
+Verification: focused `tests/test_evaluate.py tests/test_datasets.py` -> **29
+passed**; full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **273
+passed** (was 268; +5 evaluate tests). The checkpoint used for every dataset is
+`best.pt`, i.e. the one selected by Kvasir val Dice; external datasets never
+select or tune it.
+
+Left to do for Milestone 8: Step 4 (`aggregate_results.py` config x dataset
+matrix: Dice/IoU, mean/std with `n/a` for one seed, CSV + markdown), Step 5
+(missing-dataset skip vs explicit-request failure, evaluate smoke, val
 reproduction within tolerance), Step 6 (`notebooks/colab_eval.ipynb`), Step 7
 (validation; exp003 Kvasir val first, then the full table), `docs/datasets.md`
 and the evaluation-protocol section.
