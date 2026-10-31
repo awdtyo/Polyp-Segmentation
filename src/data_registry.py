@@ -50,7 +50,7 @@ DEFAULT_MASK_SUBDIR: str = "masks"
 
 #: Keys an entry in ``configs/datasets.yaml`` may set.
 _ENTRY_KEYS: frozenset[str] = frozenset(
-    {"name", "folder", "expected_count", "image_subdir", "mask_subdir", "mask_suffix"}
+    {"name", "folder", "expected_count", "source", "image_subdir", "mask_subdir", "mask_suffix"}
 )
 
 
@@ -71,6 +71,8 @@ class DatasetSpec:
         mask_subdir: Sub-folder of the raw folder holding masks.
         mask_suffix: Optional suffix between mask stem and extension, e.g.
             ``"_mask"``. Empty for every dataset in this registry.
+        source: Human-readable source name, e.g. ``"Kvasir-SEG"``. Recorded in
+            each processed ``meta.json``.
     """
 
     name: str
@@ -79,6 +81,7 @@ class DatasetSpec:
     image_subdir: str = DEFAULT_IMAGE_SUBDIR
     mask_subdir: str = DEFAULT_MASK_SUBDIR
     mask_suffix: str = ""
+    source: str = ""
 
     def raw_dir(self, data_root: str | Path) -> Path:
         """Raw folder for this dataset, ``<DATA_ROOT>/raw/<folder>``.
@@ -169,6 +172,7 @@ def load_registry(path: str | Path | None = None) -> dict[str, DatasetSpec]:
             image_subdir=str(entry.get("image_subdir", DEFAULT_IMAGE_SUBDIR)),
             mask_subdir=str(entry.get("mask_subdir", DEFAULT_MASK_SUBDIR)),
             mask_suffix=str(entry.get("mask_suffix", "")),
+            source=str(entry.get("source", "")),
         )
         if not spec.name or not spec.folder:
             raise RegistryError(f"{registry_path}: dataset #{index} name and folder must be non-empty")

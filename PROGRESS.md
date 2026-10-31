@@ -32,8 +32,10 @@ Last updated: 2026-10-31.
 - [ ] 8. Multi-dataset evaluation (user-specified, outside AGENTS.md section 9):
       zero-shot evaluation of the Kvasir-trained checkpoints on Kvasir-SEG test
       plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Step 0
-      (dataset registry + `DATA_ROOT` resolution) is done; Steps 1-7 remain.
-      Everything here is single-seed and provisional, not a final result.
+      (dataset registry + `DATA_ROOT` resolution) and Step 2
+      (`scripts/prepare_datasets.py`, run on the real data) are done; Steps 1,
+      3-7 remain. Everything here is single-seed and provisional, not a final
+      result.
 
 ## Decisions in force
 
@@ -871,4 +873,90 @@ Open questions (current):
   is model code outside the Milestone 8 scope and is on local `main`, one commit
   ahead of `origin/main` (`179aad7`). Keep it, or leave it unpushed until after
   Milestone 8? It was not created by this session's Milestone 8 work.
+
+## Session 2026-10-31 (twelfth session) - Milestone 8, Step 1 + Step 2
+
+### Step 1: how the existing eval plumbing and the Kvasir prep work (report)
+
+Read, not changed: `src/evaluate.py`, `scripts/aggregate_results.py`,
+`scripts/build_cache.py`, `src/datasets.py`.
+
+- `src/evaluate.py` CLI: `--run_dir --split {test,val} --checkpoint {best,last}`
+  (default `test`/`best`), plus `--results_csv` and `--force`. It reuses
+  `src.train.evaluate` for the val loader and metric loop, writes `eval_<split>.json`
+  and `per_image_<split>.csv` into the run folder, and appends one row to
+  `results/results.csv` keyed on `(run_name, split)`; a duplicate row is refused
+  unless `--force`, and a different header is always refused. `test` is guarded
+  as the only split that may produce a reported number.
+- `scripts/aggregate_results.py` reads only `eval_test.json` + `per_image_test.csv`,
+  groups runs by config (stripping a `_seed\d+` suffix), reports mean/std and
+  `n/a` when only one seed exists, plus a paired bootstrap comparison.
+- Kvasir cache (`scripts/build_cache.py` + `data/cache/kvasir_seg_256.npz`, 143 MB):
+  keys `ids` (U25, 1000), `images` (1000, 256, 256, 3) uint8, `masks`
+  (1000, 256, 256) uint8 {0, 1}. Masks are binarised at >127 *before* a
+  nearest-neighbour resize; images are RGB bilinear. ImageNet mean/std
+  normalisation is **not** in the npz, it is applied in `PolypDataset.__getitem__`
+  at read time. Splits are the committed 800/100/100 files in `data/splits/`.
+- New layout for M8: `<DATA_ROOT>/raw/<folder>` (read-only source) and
+  `<DATA_ROOT>/processed/<name>/{data.npz,meta.json}` (what evaluation reads),
+  with `<DATA_ROOT>` resolved by `src/data_registry.resolve_data_root`. The
+  `processed/<name>/data.npz` format is byte-for-byte the Kvasir cache format,
+  so `PolypDataset` reads it with no new code path.
+
+### Step 2: `scripts/prepare_datasets.py` (done)
+
+- `scripts/prepare_datasets.py` (new): `raw/<folder> -> processed/<name>/{data.npz,meta.json}`
+  for every registered dataset, in exactly the Kvasir cache format. Extensions
+  are discovered from disk (Kvasir `.jpg`/`.jpg`, external `.png`/`.png`), pairs
+  match by stem. Loud failures: missing raw folder, unmatched image/mask stem,
+  ambiguous stem, empty masks, mask values outside {0, 1}. A count that differs
+  from the registry's `expected_count` is a prominent warning recorded in
+  `meta.json` (`count_matches_expected`), never silently "fixed". Idempotent:
+  an existing `data.npz` at the same size is skipped; a different size is
+  refused unless `--force`. `--dataset NAME` must be present (absent -> exit 1),
+  no `--dataset` skips absent datasets with a warning (nothing present -> exit 1),
+  an unknown name is a usage error (exit 2). Also `--config` (read a run's
+  `data.image_size`/`mask_threshold`), `--size`, `--mask-threshold`,
+  `--data-root`, `--out-root`, `--limit`, `--quiet`.
+- `meta.json` per dataset: name, source, raw/processed paths, image count,
+  expected count + match flag, original-resolution summary, image size,
+  resample modes, mask threshold, image/mask extensions, mask suffix, npz bytes,
+  created timestamp.
+- `src/data_registry.py` + `configs/datasets.yaml`: added the `source` field
+  (human-readable name, e.g. `Kvasir-SEG`) that lands in `meta.json`.
+- `tests/test_prepare_datasets.py` (new, 12 tests, CPU, all in `tmp_path`):
+  stem matching across differing extensions, unmatched image reported, missing
+  folder reported, npz+meta written, idempotent + `--force`, different-size
+  refusal, empty mask fails loudly, count mismatch warns but continues, masks
+  binary, `main` skips absent / fails on an explicit absent dataset / usage error
+  on an unknown name.
+
+Run on the real data (local, CPU). `python scripts/prepare_datasets.py`:
+
+| dataset | pairs | expected | npz | notes |
+|---|---|---|---|---|
+| kvasir_seg | 1000 | 1000 | 143.5 MB | 333 distinct resolutions, most common 622x530 |
+| cvc_clinicdb | 612 | 612 | 60.0 MB | all 384x288 |
+| cvc_colondb | 380 | 380 | 45.2 MB | all 574x500 |
+| etis, cvc_300 | absent | - | - | skipped with a warning |
+
+All three npz: `ids` unicode, `images` (N,256,256,3) uint8, `masks` (N,256,256)
+uint8 in {0, 1}, zero empty masks. **Strong check:** `data/processed/kvasir_seg/data.npz`
+is bit-for-bit identical to the committed `data/cache/kvasir_seg_256.npz`
+(ids, images and masks all `np.array_equal`), so the M8 prep reproduces the
+Kvasir pipeline exactly. `data/processed/` lives under the gitignored `data/*`.
+
+Verification: `.venv/bin/python -m pytest -o addopts="" -q` -> **268 passed**
+(was 256; +12 prep tests).
+
+Left to do for Milestone 8: Step 3 (`src/evaluate.py` multi-dataset: per-(run,
+dataset) files/rows, `dataset` column in `results/results.csv`, optional flip
+TTA off by default), Step 4 (`aggregate_results.py` config x dataset matrix),
+Step 5 (missing-dataset skip vs explicit-request failure, evaluate smoke, val
+reproduction within tolerance), Step 6 (`notebooks/colab_eval.ipynb`), Step 7
+(validation; exp003 Kvasir val first, then the full table), `docs/datasets.md`
+and the evaluation-protocol section.
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
 

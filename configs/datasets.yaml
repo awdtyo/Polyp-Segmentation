@@ -29,6 +29,7 @@ datasets:
   - name: kvasir_seg
     folder: kvasir_seg
     expected_count: 1000
+    source: Kvasir-SEG
     image_subdir: images
     mask_subdir: masks
     mask_suffix: ""
@@ -37,6 +38,7 @@ datasets:
   - name: cvc_clinicdb
     folder: cvc_clinicdb
     expected_count: 612
+    source: CVC-ClinicDB
     image_subdir: images
     mask_subdir: masks
     mask_suffix: ""
@@ -46,6 +48,7 @@ datasets:
   - name: cvc_colondb
     folder: cvc_colondb
     expected_count: 380
+    source: CVC-ColonDB
     image_subdir: images
     mask_subdir: masks
     mask_suffix: ""
@@ -56,6 +59,7 @@ datasets:
   - name: etis
     folder: etis
     expected_count: 196
+    source: ETIS-LaribPolypDB
     image_subdir: images
     mask_subdir: masks
     mask_suffix: ""
@@ -65,6 +69,7 @@ datasets:
   - name: cvc_300
     folder: cvc_300
     expected_count: 60
+    source: CVC-300
     image_subdir: images
     mask_subdir: masks
     mask_suffix: ""
