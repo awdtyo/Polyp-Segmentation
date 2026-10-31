@@ -124,6 +124,22 @@ def test_fusion_hybrid_preset_is_allowed(tmp_path: Path) -> None:
     assert cfg["model"]["fusion"] == "hybrid"
 
 
+def test_fusion_xattn_swap_preset_and_stage_entry_are_allowed(tmp_path: Path) -> None:
+    preset = write_yaml(tmp_path / "preset.yaml", {"model": {"fusion": "xattn_swap"}})
+    assert utils.load_config(preset)["model"]["fusion"] == "xattn_swap"
+
+    stages = write_yaml(
+        tmp_path / "stages.yaml",
+        {"model": {"fusion": ["concat", "concat", "xattn_swap", "xattn_swap"]}},
+    )
+    assert utils.load_config(stages)["model"]["fusion"] == [
+        "concat",
+        "concat",
+        "xattn_swap",
+        "xattn_swap",
+    ]
+
+
 def test_fusion_preset_name_is_not_a_stage_entry(tmp_path: Path) -> None:
     path = write_yaml(
         tmp_path / "exp.yaml", {"model": {"fusion": ["hybrid", "concat", "xattn", "xattn"]}}

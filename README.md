@@ -70,9 +70,11 @@ PY
 baselines use `single_a`/`single_b` fusion, for example
 `model.fusion: [single_b, single_b, single_b, single_b]`, and
 `decoder.msu: false`. The dual model sets `model.encoder: dual` and uses one of
-the fusion presets `hybrid` (`[concat, concat, xattn, xattn]`), `all_concat`, or
-an explicit four-stage list. `exp005` is the hybrid fusion config, `exp006` is
-the all-concat ablation, and `exp007` is hybrid fusion with MSU. `decoder.msu`
+the fusion presets `hybrid` (`[concat, concat, xattn, xattn]`), `all_concat`,
+`xattn_swap` (`[concat, concat, xattn_swap, xattn_swap]`), or an explicit
+four-stage list. `exp005` is the hybrid fusion config, `exp006` is
+the all-concat ablation, `exp007` is hybrid fusion with MSU, and `exp013` is
+hybrid fusion with the query/key roles of the attention stages reversed. `decoder.msu`
 defaults to `false`; `decoder.msu_mode: paper` is implemented as D4 x4 into D2
 and D3 x4 into D1. `released` is accepted by config validation but the builder
 raises `NotImplementedError` because that variant is deliberately reserved.
@@ -88,6 +90,7 @@ raises `NotImplementedError` because that variant is deliberately reserved.
 | `exp006_all_concat.yaml` | dual | `all_concat` | off | all-concat ablation |
 | `exp007_hybrid_msu.yaml` | dual | `hybrid` | `paper` | hybrid fusion + MSU |
 | `exp008_convnext_base_lr1e4.yaml` | ConvNeXt-Base | `single_a` | off | fair-tuning check for the ConvNeXt baseline |
+| `exp013_hybrid_swap.yaml` | dual | `xattn_swap` | off | hybrid fusion with reversed attention query/key roles |
 
 `exp008` is identical to `exp001` except `run.name` and `train.lr_convnext`
 (`1.0e-4` instead of `3.0e-5`), so the ConvNeXt baseline can be compared with

@@ -27,12 +27,12 @@ IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
 #: Fusion settings accepted by ``model.fusion``: per-stage modes, the
 #: ``hybrid`` preset, and the single-branch presets (AGENTS.md section 3.3).
 FUSION_MODES: frozenset[str] = frozenset(
-    {"concat", "xattn", "hybrid", "all_concat", "single_a", "single_b"}
+    {"concat", "xattn", "xattn_swap", "hybrid", "all_concat", "single_a", "single_b"}
 )
 #: Modes allowed inside the four-entry ``model.fusion`` list. Preset names are
 #: only valid as a single string, not as a stage entry.
 STAGE_FUSION_MODES: frozenset[str] = frozenset(
-    {"concat", "xattn", "single_a", "single_b"}
+    {"concat", "xattn", "xattn_swap", "single_a", "single_b"}
 )
 #: Encoder choices accepted by ``model.encoder``.
 ENCODER_KINDS: frozenset[str] = frozenset({"convnext", "caformer", "dual"})

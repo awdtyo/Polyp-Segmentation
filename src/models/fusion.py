@@ -9,15 +9,19 @@ alignment, each stage is fused in one of two ways:
   cross-attention with the ConvNeXt tokens as query and the Meta-Polyp tokens
   as key/value. The attention output is added back to the query tokens, layer
   normalised, and reshaped to a feature map.
+* ``xattn_swap``: cross-attention with the Meta-Polyp tokens as query and the
+  ConvNeXt tokens as key/value. The attention output is added back to the
+  Meta-Polyp tokens before LayerNorm. This mode reverses the query/key/value
+  roles of the standard xattn.
 
 The stage-1 and stage-2 maps have 4096 and 1024 tokens at 256x256, versus 256
 and 64 at stages 3 and 4. That is why only the deeper stages use attention.
 
 ``resolve_fusion_modes`` accepts either an explicit four-entry list or one of
-the presets ``hybrid``, ``all_concat``, ``single_a`` and ``single_b``. The
-single-branch presets are handled by the model assembly, which skips the unused
-encoder entirely; :class:`FusionStack` itself only accepts the two dual-branch
-modes.
+the presets ``hybrid``, ``all_concat``, ``single_a``, ``single_b`` and
+``xattn_swap``. The single-branch presets are handled by the model assembly,
+which skips the unused encoder entirely; :class:`FusionStack` itself only accepts
+the two dual-branch modes (concat and xattn/xattn_swap).
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import torch
 from torch import Tensor, nn
 
 #: Fusion modes that use both branches.
-DUAL_FUSION_MODES: frozenset[str] = frozenset({"concat", "xattn"})
+DUAL_FUSION_MODES: frozenset[str] = frozenset({"concat", "xattn", "xattn_swap"})
 #: Fusion modes that use exactly one branch.
 SINGLE_FUSION_MODES: frozenset[str] = frozenset({"single_a", "single_b"})
 #: Every mode accepted in a per-stage fusion list.
@@ -41,6 +45,7 @@ FUSION_PRESETS: dict[str, tuple[str, str, str, str]] = {
     "all_concat": ("concat", "concat", "concat", "concat"),
     "single_a": ("single_a", "single_a", "single_a", "single_a"),
     "single_b": ("single_b", "single_b", "single_b", "single_b"),
+    "xattn_swap": ("concat", "concat", "xattn_swap", "xattn_swap"),
 }
 
 
@@ -49,8 +54,9 @@ def resolve_fusion_modes(fusion: str | Sequence[str]) -> list[str]:
 
     Args:
         fusion: A preset name (``hybrid``, ``all_concat``, ``single_a``,
-            ``single_b``), a dual mode repeated at every stage (``concat`` or
-            ``xattn``), or a four-entry sequence of stage modes.
+            ``single_b``, ``xattn_swap``), a dual mode repeated at every stage
+            (``concat`` or ``xattn`` or ``xattn_swap``), or a four-entry
+            sequence of stage modes.
 
     Returns:
         List of four modes, stage 1 to stage 4.
@@ -221,25 +227,30 @@ class ConcatFusion(nn.Module):
 
 
 class CrossAttentionFusion(nn.Module):
-    """Cross-attention fusion with ConvNeXt as query and Meta-Polyp as key/value.
+    """Cross-attention fusion.
+
+    Supports two modes:
+    - ``xattn``: ConvNeXt as query, Meta-Polyp as key/value.
+    - ``xattn_swap``: Meta-Polyp as query, ConvNeXt as key/value.
 
     Args:
         channels: Stage width ``C_i``.
         num_heads: Attention heads; must divide ``channels``.
         pos_enc_2d: Add a fixed 2D sinusoidal encoding to both token streams
             before attention. Off by default, per AGENTS.md section 3.3.
+        reverse: If True, use xattn_swap mode (Meta-Polyp query, ConvNeXt key/value).
 
     Attributes:
         attn: ``nn.MultiheadAttention`` with ``batch_first=True``.
         norm: LayerNorm applied after the residual add.
 
     Forward:
-        ``(query, key_value)`` each ``(B, C_i, H, W)`` ->
-        ``(B, C_i, H, W)``. The attention output is added to the query tokens
-        before LayerNorm; no sigmoid or softmax is exposed.
+        ``(query, key_value)`` each ``(B, C_i, H, W)`` -> ``(B, C_i, H, W)``.
+        The attention output is added to the query tokens before LayerNorm;
+        no sigmoid or softmax is exposed.
     """
 
-    def __init__(self, channels: int, num_heads: int = 8, pos_enc_2d: bool = False) -> None:
+    def __init__(self, channels: int, num_heads: int = 8, pos_enc_2d: bool = False, reverse: bool = False) -> None:
         super().__init__()
         if channels <= 0:
             raise ValueError(f"channels must be positive, got {channels}")
@@ -252,6 +263,7 @@ class CrossAttentionFusion(nn.Module):
         self.channels = int(channels)
         self.num_heads = int(num_heads)
         self.pos_enc_2d = bool(pos_enc_2d)
+        self.reverse = bool(reverse)
         self.attn = nn.MultiheadAttention(self.channels, self.num_heads, batch_first=True)
         self.norm = nn.LayerNorm(self.channels)
 
@@ -259,8 +271,8 @@ class CrossAttentionFusion(nn.Module):
         """Fuse two maps with cross-attention.
 
         Args:
-            query: ``(B, C, H, W)`` aligned ConvNeXt map.
-            key_value: ``(B, C, H, W)`` aligned Meta-Polyp map.
+            query: ``(B, C, H, W)`` aligned map from the query branch.
+            key_value: ``(B, C, H, W)`` aligned map from the key/value branch.
 
         Returns:
             ``(B, C, H, W)`` fused map.
@@ -294,10 +306,10 @@ class FusionStack(nn.Module):
     """Apply one fusion block per stage to two lists of aligned maps.
 
     Args:
-        modes: Four per-stage modes, each ``concat`` or ``xattn``. Use
-            :func:`resolve_fusion_modes` first when reading a config.
+        modes: Four per-stage modes, each ``concat``, ``xattn`` or ``xattn_swap``.
+            Use :func:`resolve_fusion_modes` first when reading a config.
         channels: Stage widths ``C1..C4``.
-        num_heads: Attention heads for every ``xattn`` stage.
+        num_heads: Attention heads for every ``xattn`` / ``xattn_swap`` stage.
         pos_enc_2d: Enable the fixed 2D sinusoidal encoding in ``xattn`` stages.
 
     Forward:
@@ -330,7 +342,11 @@ class FusionStack(nn.Module):
         self.channels = widths
         self.blocks = nn.ModuleList(
             [
-                ConcatFusion(width) if mode == "concat" else CrossAttentionFusion(width, num_heads, pos_enc_2d)
+                (
+                    ConcatFusion(width)
+                    if mode == "concat"
+                    else CrossAttentionFusion(width, num_heads, pos_enc_2d, reverse=(mode == "xattn_swap"))
+                )
                 for mode, width in zip(stage_modes, widths)
             ]
         )
