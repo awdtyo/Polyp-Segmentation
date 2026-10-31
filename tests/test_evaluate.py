@@ -345,6 +345,46 @@ def test_results_csv_refuses_a_different_header(tmp_path: Path, smoke_run: Path)
     assert results.read_text(encoding="utf-8") == "run_name,dice\nold,0.5\n"
 
 
+def test_config_override_is_read_and_recorded(isolated_test_run: Path, tmp_path: Path) -> None:
+    """--config replaces the run's resolved config; a missing override is a usage error."""
+    source = isolated_test_run / "config_resolved.yaml"
+    override = tmp_path / "session_config.yaml"
+    override.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    results = tmp_path / "results.csv"
+    code = evaluate_mod.main(
+        [
+            "--run_dir",
+            str(isolated_test_run),
+            "--split",
+            "val",
+            "--config",
+            str(override),
+            "--results_csv",
+            str(results),
+        ]
+    )
+    assert code == evaluate_mod.EXIT_OK
+    payload = json.loads(
+        (isolated_test_run / f"eval_val_{TRAIN_DATASET}.json").read_text(encoding="utf-8")
+    )
+    assert payload["config_override"] == str(override)
+
+    code = evaluate_mod.main(
+        [
+            "--run_dir",
+            str(isolated_test_run),
+            "--split",
+            "val",
+            "--config",
+            str(tmp_path / "missing.yaml"),
+            "--results_csv",
+            str(results),
+        ]
+    )
+    assert code == evaluate_mod.EXIT_USAGE
+
+
 def test_processed_loader_shapes_and_binary_masks(
     isolated_test_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

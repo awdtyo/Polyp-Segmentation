@@ -34,9 +34,10 @@ Last updated: 2026-10-31.
       plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Steps 0
       (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
       (`scripts/prepare_datasets.py`, run on the real data), 3 (multi-dataset
-      `src/evaluate.py`), 4 (config x dataset aggregation) and 5 (test suite for
-      the multi-dataset path) are done; Steps 6-7 remain. Everything here is
-      single-seed and provisional, not a final result.
+      `src/evaluate.py`), 4 (config x dataset aggregation), 5 (test suite for
+      the multi-dataset path) and 6 (`notebooks/colab_eval.ipynb`) are done;
+      Step 7 (validation and docs) remains. Everything here is single-seed and
+      provisional, not a final result.
 
 ## Decisions in force
 
@@ -1094,6 +1095,62 @@ Left to do for Milestone 8: Step 6 (`notebooks/colab_eval.ipynb`), Step 7
 (validation; exp003 Kvasir val first, then the full table) plus `docs/datasets.md`,
 the evaluation-protocol section and the README pass (the README still shows the
 old `eval_test.json` names).
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (sixteenth session) - Milestone 8, Step 6
+
+### Step 6: `notebooks/colab_eval.ipynb` (done)
+
+New launcher for the multi-dataset flow, separate from `colab_run.ipynb`
+(training). 17 cells, all code cells compile. It is safe to rerun:
+
+- Settings: `DRIVE_DATA_ROOT` (raw + processed on Drive), `LOCAL_DATA_ROOT`
+  (per-session copy on `/content`), `RUNS_DIR` / `RESULTS_CSV` on Drive, `REF`,
+  `PREP_SIZE` (256), `RUN_PREP`, `EVAL_SPLIT` (`test`), `FORCE` (True),
+  `TTA_FLIP` (False), `ONLY_RUNS` (None = every non-smoke run with `best.pt`).
+- Mounts Drive, clones/checks out the repo at `REF`, installs only missing
+  packages, verifies the GPU.
+- Prep: `scripts/prepare_datasets.py --size 256 --data-root <Drive>` builds every
+  dataset present under `<DRIVE_DATA_ROOT>/raw/<folder>` (idempotent; absent
+  datasets skipped with a warning).
+- Copies `<DRIVE_DATA_ROOT>/processed` to `/content/polyp-data/processed` and
+  sets `DATA_ROOT` so evaluation reads locally.
+- Writes a per-run **session config** that changes only data paths: `split_dir`
+  to the committed splits, `cache_path` to the local prepared Kvasir npz. This is
+  needed because a run's `config_resolved.yaml` records the training-session
+  `/content` paths, which are gone in a fresh session.
+- Evaluates each run on `kvasir_seg` first (split `EVAL_SPLIT`) plus every
+  prepared external dataset (recorded as `test`), with `--checkpoint best` and
+  `--results_csv` on Drive; `--force` replaces its own row on a rerun.
+- Aggregates with `scripts/aggregate_results.py --split <EVAL_SPLIT>` and prints
+  `aggregate_results.md`.
+- Last cell documents where checkpoints (`best.pt`, `last.pt`), eval json /
+  per-image csv, `results.csv` and the aggregate files live on Drive.
+
+### Supporting change: `src/evaluate.py --config` (new flag)
+
+`src/evaluate.py` gained `--config PATH` to read a different resolved config
+instead of the run's own `config_resolved.yaml`, for exactly the fresh-session
+case above. It is data-path oriented; the architecture stays the run's own
+because the session config is a copy of it. The payload records the override in
+a new `config_override` field (the results CSV header is unchanged; `config_file`
+still points at the training config). `load_run_config(run_dir, override=...)`
+raises a clear `EvaluateError` when the override file is missing (exit 2).
+
+Tests: `tests/test_evaluate.py::test_config_override_is_read_and_recorded`
+(override is read and recorded; a missing override is a usage error). Focused
+`tests/test_evaluate.py` -> **15 passed**.
+
+Verification: full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **281
+passed** (was 280; +1). Notebook JSON parses and all code cells compile (checked
+with `ast.parse`). Not run on Colab. CPU-only, no pretrained weights downloaded,
+no training run.
+
+Left to do for Milestone 8: Step 7 (local validation; exp003 Kvasir val first,
+then the full table) plus `docs/datasets.md`, the evaluation-protocol section and
+the README pass (the README still shows the old `eval_test.json` names).
 
 Open questions (current): unchanged from the eleventh session (commit `d5508ca`
 is unpushed model code outside M8).

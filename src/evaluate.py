@@ -144,7 +144,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
     Returns:
         Namespace with ``run_dir``, ``split``, ``checkpoint``, ``dataset``,
-        ``tta_flip``, ``results_csv`` and ``force``.
+        ``tta_flip``, ``config``, ``results_csv`` and ``force``.
     """
     parser = argparse.ArgumentParser(description="Evaluate a trained run on one or more datasets.")
     parser.add_argument("--run_dir", required=True, type=Path, help="Run folder written by src.train")
@@ -176,6 +176,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "Outputs are written with a '_ttaflip' suffix.",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Override the run's config_resolved.yaml (data paths only in practice). Use when the "
+        "training data lived at paths that no longer exist, e.g. a fresh Colab session.",
+    )
+    parser.add_argument(
         "--results_csv",
         type=Path,
         default=None,
@@ -189,11 +196,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def load_run_config(run_dir: Path) -> dict[str, Any]:
-    """Load ``config_resolved.yaml`` from a run folder.
+def load_run_config(run_dir: Path, override: Path | None = None) -> dict[str, Any]:
+    """Load ``config_resolved.yaml`` from a run folder, or an override file.
 
     Args:
         run_dir: Run folder.
+        override: Optional config to read instead of the run's own
+            ``config_resolved.yaml``. Used when the training data lived at paths
+            that no longer exist (e.g. a fresh Colab session); the architecture
+            should be the run's own, so only data paths are expected to differ.
 
     Returns:
         Resolved config.
@@ -202,8 +213,10 @@ def load_run_config(run_dir: Path) -> dict[str, Any]:
         EvaluateError: if the file is missing.
         ConfigError: if the file is not a valid config.
     """
-    path = run_dir / "config_resolved.yaml"
+    path = Path(override) if override is not None else run_dir / "config_resolved.yaml"
     if not path.is_file():
+        if override is not None:
+            raise EvaluateError(f"Config override not found: {path}")
         raise EvaluateError(f"Missing {path}; evaluate needs the run's resolved config")
     return load_config(path)
 
@@ -670,7 +683,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return EXIT_USAGE
 
     try:
-        cfg = load_run_config(run_dir)
+        cfg = load_run_config(run_dir, override=args.config)
     except (ConfigError, EvaluateError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -743,6 +756,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "tta": tta_label,
             "checkpoint": args.checkpoint,
             "config_file": str(run_info.get("config_file") or run_dir / "config_resolved.yaml"),
+            "config_override": str(args.config) if args.config is not None else None,
             "git_commit": run_info.get("git_commit"),
             "seed": int(cfg["run"]["seed"]),
             "epochs": _checkpoint_epochs(checkpoint, cfg),
