@@ -17,11 +17,14 @@ Last updated: 2026-10-31.
 - [x] 4. Fusion: concat at stages 1 and 2, cross-attention at stages 3 and 4,
       plus the `all_concat` variant.
 - [x] 5. MSU links on and off.
-- [ ] 6. `evaluate.py`, results logging, and ablation configs for: A only,
+- [x] 6. `evaluate.py`, results logging, and ablation configs for: A only,
       B only, all concat, hybrid fusion, hybrid fusion + MSU, hybrid fusion
-      without MSU. **Approved 2026-10-31, in progress**: the ablation configs
-      exist; `evaluate.py`, the aggregation script, seed wiring and tests are
-      being added in this session.
+      without MSU. **Done 2026-10-31**: `src/evaluate.py` (test-split guard,
+      one results row per run/split, per-image CSV), `scripts/aggregate_results.py`
+      (mean/std over seeds, `n/a` for one seed, paired bootstrap comparison),
+      seed tests, the Colab `SEED`/evaluate/aggregate cells, and the README
+      "Full ablation" section. The ablation runs themselves have not been
+      launched; that is the user's Colab work.
 - [ ] 7. `notebooks/colab_run.ipynb` launcher and a README section on running
       on Colab. **Partial**: launcher (streaming output, `REF`, `RUN_SUFFIX`,
       `GRAD_ACCUM`) and the README section are in place; the final README pass
@@ -498,8 +501,8 @@ parameter counts, not VRAM measurements.
 
 ### Open questions (current)
 
-- Milestone 6 (evaluation, results logging, ablation runs) is not started and
-  needs explicit approval.
+- Milestone 6 was approved and implemented in the eighth session; the ablation
+  runs themselves are still the user's Colab work.
 - The exact Colab exit-1 cause is still unknown; the instrumentation and
   streaming should identify it on the next run.
 - exp003's batch size was not recorded; `config_resolved.yaml` from that run
@@ -507,3 +510,87 @@ parameter counts, not VRAM measurements.
 - Whether to run `exp008` (ConvNeXt at 1e-4) before or alongside the
   ablations is an open scheduling question.
 
+
+## Session 2026-10-31 (eighth session)
+
+### Orientation
+
+Clean tree at `714741e`, `main == origin/main`, `pytest` 213 passed. Milestone 6
+was approved at the start of the session, together with the exp008 probe rule
+and the final comparison protocol (both recorded in AGENTS.md section 11).
+
+### Milestone 6a: `src/evaluate.py` (`1c89622`)
+
+- `python -m src.evaluate --run_dir <run> [--split test|val]
+  [--checkpoint best|last] [--results_csv <path>] [--force]`.
+- Rebuilds the model from `config_resolved.yaml` with `pretrained_a/b: false`
+  (the checkpoint supplies every weight, so evaluation never downloads), loads
+  the checkpoint, and reuses `src.train.evaluate`, so the numbers come from the
+  same per-image Dice/IoU code as training.
+- Writes `<run>/eval_<split>.json` (mean/std Dice and IoU, n, small-lesion Dice,
+  provenance) and `<run>/per_image_<split>.csv`
+  (`id, dice, iou, lesion_pixels, small_lesion`).
+- Appends one row to the results CSV (default `results/results.csv`): run name,
+  split, config, git commit, seed, epochs, params (M), best val Dice, test Dice,
+  test IoU, small-lesion Dice, mean epoch time, peak GPU memory. Rows are never
+  reordered; a duplicate `(run_name, split)` is refused unless `--force`
+  replaces that row in place.
+- Test-set safety: prints a `TEST SPLIT:` line and aborts if any test id also
+  appears in `train.txt` or `val.txt`.
+- The results header gained a `split` column so a val row and a test row of one
+  run can coexist. `results/results.csv` is still header-only and committed.
+- `tests/test_evaluate.py`: 7 tests on module-scoped smoke runs (files and row,
+  metrics equal to `src.train.evaluate` and to `SegMetrics`, duplicate refused
+  then `--force` replaces, overlap detected, isolated test run writes a row,
+  incompatible header refused without rewriting).
+
+### Milestone 6b: `scripts/aggregate_results.py` (`2055764`)
+
+- Reads `eval_test.json` + `per_image_test.csv` from every run folder under
+  `--runs-dir`, groups by config (the `_seed<N>` suffix and `config_file` stem
+  are ignored), and writes `aggregate_results.md`/`.csv` into `--out-dir`
+  (default: the runs directory).
+- Columns: config, number of seeds, mean ± std test Dice and IoU, small-lesion
+  Dice, parameters, mean epoch time. One seed gives `n/a`, never `0.0`.
+- `--compare A B` adds a paired per-image Dice difference (B - A) averaged over
+  shared seeds, with a fixed-seed bootstrap 95% CI, and states what it does and
+  does not show. Configs sharing no seed raise a clean error.
+- `tests/test_aggregate_results.py`: 6 tests on toy per-image files (grouping,
+  hand-computed mean/std, `n/a`, skip training-only folders, seed-suffix
+  fallback, reproducible paired comparison, no shared seed).
+
+### Milestone 6c: seeds, notebook and README
+
+- `tests/test_seeds.py` (4 tests): the same `run.seed` reproduces the initial
+  weights, the DataLoader shuffle order and the training augmentation, a
+  different seed changes all three, and `train.main` calls `set_seed` once with
+  `cfg["run"]["seed"]` before building the model.
+- `notebooks/colab_run.ipynb`: new `SEED` setting (sets `run.seed` and appends
+  `_seed<N>` to the run name), `RESULTS_CSV` on Drive, an evaluate-after-training
+  cell (`--split test`, or `val` in `SMOKE` mode because the synthetic test ids
+  are a subset of val), and a final aggregate cell.
+- `README.md`: "Full ablation" section (six models, `git tag ablation-v1` to
+  freeze the commit, one epoch count N from 30-epoch curves, seeds 42/43/44,
+  evaluate the test split once per run, aggregate, and where every file goes).
+  Colab steps, tests and roadmap updated.
+
+### Tests
+
+- `pytest`: **230 passed** (213 before this session, +7 evaluate, +6 aggregate,
+  +4 seeds).
+- Manual checks on a local `--smoke` run: val evaluation wrote both files and one
+  row; a duplicate row was refused; `--force` replaced it (header + 1 row); a
+  test evaluation on the synthetic split aborted with
+  "1 test ids also appear in val.txt".
+- No pretrained weights were downloaded, no full training was run, and no VRAM
+  number was measured in this session.
+
+### Open questions (current)
+
+- The ablation runs have not been launched: N, the T4 batch size and the final
+  table are still the user's Colab work.
+- Should `results/results.csv` stay header-only in the repo (current choice), or
+  should final rows be committed at the end? Committing them would make the
+  table reproducible from git alone but mixes data into the repo.
+- The paired bootstrap compares test images only; a case-level or
+  multi-dataset comparison is not implemented.

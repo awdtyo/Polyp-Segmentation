@@ -171,7 +171,13 @@ Kvasir-SEG split (800/100/100, disjoint). Model tests cover both encoders
 information flow, MSU gradients, the unchanged Milestone-4 state dict when MSU
 is off, the Branch A, Branch B and hybrid overfit-one-batch checks,
 parameter-group coverage, and an end-to-end `--smoke` run for each branch layout,
-including `exp005`, `exp006` and `exp007`. No test downloads pretrained weights:
+including `exp005`, `exp006` and `exp007`. Evaluation tests cover `src/evaluate`
+(files and results row, metrics equal to the training-time function, duplicate
+rows refused, test/train overlap detected) and `scripts/aggregate_results.py`
+(seed grouping, mean/std on toy per-image files, `n/a` for one seed, reproducible
+paired bootstrap). Seed tests pin that `run.seed` controls the initial weights,
+the shuffle order and the augmentation, and that `train.main` passes it to
+`set_seed`. No test downloads pretrained weights:
 every test passes `pretrained=False`. The albumentations augmentation test is
 skipped when albumentations is not installed; everything else runs with torch +
 Pillow + YAML only.
@@ -189,16 +195,20 @@ reinstalled.
 3. Add `GH_TOKEN` in **Colab Secrets** (key icon). The token is used for the
    clone/fetch only; it is not printed and is not written into `.git/config`.
 4. Set `CONFIG`, `RUNS_DIR`, `REF` (commit, tag or branch to check out) and the
-   optional `EPOCHS`, `BATCH_SIZE`, `GRAD_ACCUM` and `RUN_SUFFIX` overrides in
-   the first cell.
-5. Run the cells top to bottom.
+   optional `EPOCHS`, `BATCH_SIZE`, `GRAD_ACCUM`, `SEED` and `RUN_SUFFIX`
+   overrides in the first cell.
+5. Run the cells top to bottom. The last two cells evaluate the held-out test
+   split and aggregate the seeds; see [Full ablation](#full-ablation).
 
 `REF` is checked out instead of a plain `git pull`, so a rerun cannot silently
 pick up newer code than the one recorded in `run_info.json`; a commit hash is
 the most reproducible choice. `RUN_SUFFIX` is appended to `run.name`, so a
-probe with a different epoch count, seed or batch size gets its own folder
-instead of resuming into the previous one. `GRAD_ACCUM` overrides
-`train.grad_accum_steps` when `BATCH_SIZE` has to drop on a T4.
+probe with a different epoch count or batch size gets its own folder instead of
+resuming into the previous one. `SEED` sets `run.seed` and appends `_seed<N>` to
+`run.name`, so seeds 42, 43 and 44 of one config never share a folder (and never
+resume into each other). `GRAD_ACCUM` overrides `train.grad_accum_steps` when
+`BATCH_SIZE` has to drop on a T4. `RESULTS_CSV` points at the results CSV on
+Drive (`<RUNS_DIR>/results.csv` by default).
 
 The training cell streams the child process output line by line and prints the
 exit code, raising only when it is non-zero. `src.train` also logs every
@@ -238,11 +248,93 @@ count: the cosine schedule would change. Use a separate `RUNS_DIR` for the probe
    default change. No VRAM number is claimed here: measure it on your T4 and
    record it in the "Colab results" table in [PROGRESS.md](PROGRESS.md).
 
+## Full ablation
+
+The ablation covers six reported models on the same data and split: ConvNeXt only
+(`single_a`), CAFormer only (`single_b`), all-concat fusion, hybrid fusion,
+hybrid fusion + MSU, and hybrid fusion without MSU. `exp005` is hybrid fusion
+with MSU off, so "hybrid fusion" and "hybrid fusion without MSU" are the same
+config: five configs give six reported rows, and both rows come from the same
+runs.
+
+| Model | Config |
+|---|---|
+| A only (ConvNeXt-Base) | `configs/exp001_convnext_base_baseline.yaml` (or `exp008` if the probe wins) |
+| B only (CAFormer-S18) | `configs/exp003_caformer_s18_baseline.yaml` |
+| All concat | `configs/exp006_all_concat.yaml` |
+| Hybrid fusion without MSU | `configs/exp005_hybrid_fusion.yaml` (`decoder.msu: false`) |
+| Hybrid fusion + MSU | `configs/exp007_hybrid_msu.yaml` (`decoder.msu: paper`) |
+
+Procedure (AGENTS.md section 11, "Final comparison protocol"):
+
+1. **Freeze the code.** Commit everything, then tag the exact commit every run
+   will use:
+
+   ```
+   git tag -a ablation-v1 -m "frozen commit for the final ablation"
+   git push origin ablation-v1
+   ```
+
+   Set `REF=ablation-v1` in the Colab notebook. The tag is recorded in
+   `run_info.json` through the commit hash, so a table row always points at the
+   code that produced it. Do not move the tag once runs have started; a fix needs
+   a new tag (`ablation-v2`) and a full rerun.
+
+2. **Pick one epoch count N.** Train one config for 30 epochs, plot val Dice from
+   `metrics.csv`, and choose N once for every model from those curves. N is not
+   re-tuned per config, and val Dice (not test) is the selection signal.
+
+3. **Run three seeds per config.** Seeds 42, 43 and 44, with `SEED` set in the
+   notebook so the run folder is `<config>_seed42`, `<config>_seed43`,
+   `<config>_seed44`. Same split (`data/splits/`, committed), same batch size,
+   same image size (256), same tag. Keep `REF`, `CONFIG`, `EPOCHS` and
+   `RUNS_DIR` identical between the three runs apart from `SEED`.
+
+4. **Evaluate the test split once per run,** after training has finished:
+
+   ```
+   python -m src.evaluate --run_dir <RUNS_DIR>/<run name> --split test \
+       --checkpoint best --results_csv <RUNS_DIR>/results.csv
+   ```
+
+   This writes `eval_test.json` and `per_image_test.csv` into the run folder and
+   appends one row per `(run name, split)`. The test split is never used for
+   model selection; a duplicate row is refused unless `--force` is given, and a
+   test id that also appears in `train.txt`/`val.txt` aborts the run.
+
+5. **Aggregate the seeds:**
+
+   ```
+   python scripts/aggregate_results.py --runs-dir <RUNS_DIR>
+   ```
+
+   This groups runs by config (ignoring `_seed<N>`) and writes the table. A
+   config with one seed shows `n/a` for std, never `0.0`. Add
+   `--compare exp005_hybrid_fusion exp007_hybrid_msu` for a paired per-image
+   comparison with a fixed-seed bootstrap 95% CI; that interval describes this
+   test set only and is not a multiple-comparison correction.
+
+Where results go, per run folder and in the runs directory:
+
+| File | Contents |
+|---|---|
+| `<run>/metrics.csv` | one row per epoch: losses, val Dice/IoU, LR per group, epoch time |
+| `<run>/eval_test.json` | mean/std Dice and IoU, n, small-lesion Dice, provenance |
+| `<run>/per_image_test.csv` | `id, dice, iou, lesion_pixels, small_lesion` per test image |
+| `<RUNS_DIR>/results.csv` | one row per run and split (never reordered or overwritten) |
+| `<RUNS_DIR>/aggregate_results.md` / `.csv` | mean ± std across seeds, per config |
+
+Report mean and standard deviation over the three seeds. A single run is never
+reported as the result, and the `results/results.csv` committed in the repo is
+the header only: real rows live on Drive.
+
 ## Reproducibility rules
 
 - One config per experiment, committed. Runs write `config_resolved.yaml` and
   `run_info.json` (milestone 2).
-- Seeds are set from `run.seed` for Python, NumPy and torch.
+- Seeds are set from `run.seed` for Python, NumPy and torch; the same seed also
+  fixes the initial weights, the DataLoader shuffle order and the training
+  augmentation pipeline (tested in `tests/test_seeds.py`).
 - Train/val only for training and model selection; test is touched once.
 - Data, checkpoints, run folders and `.env` never enter git.
 
@@ -276,8 +368,9 @@ measurements: no VRAM number is claimed.
 
 ## Roadmap
 
-Milestones 1-5 are complete. Milestone 6 (evaluation, results logging and the
-ablation runs) is pending explicit approval. Milestone 7 is **partial**: the
-thin Colab launcher (`notebooks/colab_run.ipynb`) and the README section are in
-place, while the final README pass is still to do. See
-[PROGRESS.md](PROGRESS.md).
+Milestones 1-6 are complete. Milestone 6 added `src/evaluate.py`, the
+multi-seed aggregation script, the seed/Colab wiring, the evaluation,
+aggregation and seed tests, and the [Full ablation](#full-ablation) section
+above. Milestone 7 is **partial**: the thin Colab launcher
+(`notebooks/colab_run.ipynb`) and the README section are in place, while the
+final README pass is still to do. See [PROGRESS.md](PROGRESS.md).
