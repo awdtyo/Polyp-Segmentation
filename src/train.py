@@ -57,7 +57,17 @@ METRICS_COLUMNS: tuple[str, ...] = (
     "lr_head",
     "peak_gpu_mem_mb",
     "epoch_time_s",
+    # Per-epoch wall-clock breakdown, appended so older metrics.csv files stay
+    # readable: they simply stop before these columns (see append_metrics_row).
+    "train_time_s",
+    "val_time_s",
+    "grid_time_s",
+    "best_save_time_s",
+    "last_save_time_s",
 )
+
+#: Run folders whose legacy metrics.csv already produced a one-time warning.
+_WARNED_LEGACY_HEADERS: set[str] = set()
 
 #: Exit code when a required post-training step (a checkpoint write) fails.
 #: Optional steps never change the exit code; they only log a warning.
@@ -715,6 +725,13 @@ def load_checkpoint(
 def append_metrics_row(path: str | Path, row: Mapping[str, Any]) -> Path:
     """Append one epoch row to ``metrics.csv``, writing the header if needed.
 
+    New columns are always added at the end of :data:`METRICS_COLUMNS`, so an
+    existing file whose header is a shorter prefix of the current one is an
+    older run. It keeps its own columns and receives rows with only those
+    columns; that is what lets a resumed run continue an old ``metrics.csv``
+    instead of failing on the header. A header that is neither the current one
+    nor a prefix is still rejected.
+
     Args:
         path: CSV path.
         row: Values for :data:`METRICS_COLUMNS`.
@@ -724,7 +741,7 @@ def append_metrics_row(path: str | Path, row: Mapping[str, Any]) -> Path:
 
     Raises:
         KeyError: if a column is missing from ``row``.
-        ValueError: if an existing file has a different header (old run folder).
+        ValueError: if an existing file has an incompatible header (old run folder).
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -732,20 +749,46 @@ def append_metrics_row(path: str | Path, row: Mapping[str, Any]) -> Path:
     if missing:
         raise KeyError(f"metrics row missing columns: {missing}")
     write_header = not out.is_file() or out.stat().st_size == 0
+    fieldnames = list(METRICS_COLUMNS)
     if not write_header:
         with out.open(newline="", encoding="utf-8") as handle:
             existing_header = next(csv.reader(handle), [])
         if existing_header != list(METRICS_COLUMNS):
-            raise ValueError(
-                f"{out} has an incompatible header {existing_header}; "
-                f"expected {list(METRICS_COLUMNS)}. Use a new run folder."
-            )
+            if not _is_legacy_header(existing_header):
+                raise ValueError(
+                    f"{out} has an incompatible header {existing_header}; "
+                    f"expected {list(METRICS_COLUMNS)} or an older prefix of it. "
+                    "Use a new run folder."
+                )
+            fieldnames = list(existing_header)
+            if str(out) not in _WARNED_LEGACY_HEADERS:
+                _WARNED_LEGACY_HEADERS.add(str(out))
+                print(
+                    f"{out} has the older metrics header without the timing "
+                    f"columns; appending {len(fieldnames)}-column rows so the run "
+                    "can resume. Start a new run folder to record them.",
+                    file=sys.stderr,
+                )
     with out.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(METRICS_COLUMNS))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
-        writer.writerow({column: row[column] for column in METRICS_COLUMNS})
+        writer.writerow({column: row[column] for column in fieldnames})
     return out
+
+
+def _is_legacy_header(header: Sequence[str]) -> bool:
+    """True when ``header`` is a shorter prefix of :data:`METRICS_COLUMNS`.
+
+    Args:
+        header: Header read from an existing ``metrics.csv``.
+
+    Returns:
+        True for an older, shorter header that new columns were appended after.
+    """
+    return 0 < len(header) < len(METRICS_COLUMNS) and list(header) == list(
+        METRICS_COLUMNS[: len(header)]
+    )
 
 
 def _git_info(repo_dir: str | Path | None = None) -> dict[str, Any]:
@@ -1132,14 +1175,93 @@ def main(argv: Iterable[str] | None = None) -> int:
             # one-epoch smoke run the LR is legitimately 0, which would hide it.
             rates = get_learning_rates(optimizer)
             reseed_train_augmentation(train_loader, int(cfg["run"]["seed"]) + epoch)
+
+            train_started = time.perf_counter()
             train_stats = train_one_epoch(
                 model, train_loader, loss_fn, optimizer, scheduler, scaler, cfg, device, max_steps=max_steps
             )
+            train_time_s = time.perf_counter() - train_started
+
+            val_started = time.perf_counter()
             val_stats = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp)
+            val_time_s = time.perf_counter() - val_started
+
             peak_epoch_mb = (
                 float(torch.cuda.max_memory_allocated()) / (1024**2) if device.type == "cuda" else 0.0
             )
             peak_gpu_mem_mb = max(peak_gpu_mem_mb, peak_epoch_mb)
+
+            grid_time_s = 0.0
+            every = max(1, int(cfg["logging"]["log_images_every"]))
+            if epoch % every == 0:
+                grid_started = time.perf_counter()
+                grid = run_post_step(
+                    f"prediction grid (epoch {epoch})",
+                    lambda: log_prediction_grid(
+                        run_dir,
+                        model,
+                        val_loader,
+                        device,
+                        cfg,
+                        epoch,
+                        int(cfg["logging"]["num_log_images"]),
+                    ),
+                    required=False,
+                )
+                grid_time_s = time.perf_counter() - grid_started
+                if grid is not None and bool(cfg["logging"]["wandb"]):
+                    try:
+                        import wandb
+
+                        wandb.log({f"preds/epoch_{epoch}": wandb.Image(str(grid))})
+                    except Exception:  # pragma: no cover
+                        pass
+
+            best_save_time_s = 0.0
+            last_save_time_s = 0.0
+            save_error: PostTrainingStepError | None = None
+            try:
+                if val_stats["dice"] > best_val_dice:
+                    best_val_dice = float(val_stats["dice"])
+                    best_started = time.perf_counter()
+                    try:
+                        run_post_step(
+                            f"save best.pt (epoch {epoch})",
+                            lambda: save_checkpoint(
+                                best_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
+                            ),
+                            required=True,
+                        )
+                    finally:
+                        best_save_time_s = time.perf_counter() - best_started
+                    print(f"  new best val dice {best_val_dice:.4f} -> {best_path}")
+                # last.pt is written after the best check, so it always carries the
+                # current best value; otherwise a disconnect could make resume
+                # overwrite best.pt with a worse epoch.
+                last_step_name = (
+                    f"final checkpoint save: last.pt (epoch {epoch})"
+                    if epoch + 1 >= int(cfg["train"]["epochs"])
+                    else f"save last.pt (epoch {epoch})"
+                )
+                last_started = time.perf_counter()
+                try:
+                    run_post_step(
+                        last_step_name,
+                        lambda: save_checkpoint(
+                            last_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
+                        ),
+                        required=True,
+                    )
+                finally:
+                    last_save_time_s = time.perf_counter() - last_started
+            except PostTrainingStepError as exc:
+                # Still write the epoch row below, so a failed checkpoint never
+                # hides a completed epoch's numbers. The error is re-raised after.
+                save_error = exc
+
+            # Total epoch wall clock, including the grid and both checkpoint
+            # writes. It used to stop before them, which is why a "37 s" epoch
+            # line could sit inside ~98 s of real wall clock on Colab.
             elapsed = time.time() - started
             epoch_times_s.append(elapsed)
 
@@ -1154,12 +1276,20 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "lr_head": rates["head"],
                 "peak_gpu_mem_mb": round(peak_epoch_mb, 1),
                 "epoch_time_s": round(elapsed, 2),
+                "train_time_s": round(train_time_s, 2),
+                "val_time_s": round(val_time_s, 2),
+                "grid_time_s": round(grid_time_s, 2),
+                "best_save_time_s": round(best_save_time_s, 2),
+                "last_save_time_s": round(last_save_time_s, 2),
             }
             append_metrics_row(metrics_path, row)
             print(
                 f"epoch {epoch}: train {row['train_loss']:.4f} val {row['val_loss']:.4f} "
                 f"dice {row['val_dice']:.4f} iou {row['val_iou']:.4f} "
-                f"peak {row['peak_gpu_mem_mb']:.0f}MB ({elapsed:.1f}s)"
+                f"peak {row['peak_gpu_mem_mb']:.0f}MB ({elapsed:.1f}s; "
+                f"train {row['train_time_s']:.1f}s val {row['val_time_s']:.1f}s "
+                f"grid {row['grid_time_s']:.1f}s best {row['best_save_time_s']:.1f}s "
+                f"last {row['last_save_time_s']:.1f}s)"
             )
 
             if bool(cfg["logging"]["wandb"]):
@@ -1170,54 +1300,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 except Exception:  # pragma: no cover
                     pass
 
-            every = max(1, int(cfg["logging"]["log_images_every"]))
-            if epoch % every == 0:
-                grid = run_post_step(
-                    f"prediction grid (epoch {epoch})",
-                    lambda: log_prediction_grid(
-                        run_dir,
-                        model,
-                        val_loader,
-                        device,
-                        cfg,
-                        epoch,
-                        int(cfg["logging"]["num_log_images"]),
-                    ),
-                    required=False,
-                )
-                if grid is not None and bool(cfg["logging"]["wandb"]):
-                    try:
-                        import wandb
-
-                        wandb.log({f"preds/epoch_{epoch}": wandb.Image(str(grid))})
-                    except Exception:  # pragma: no cover
-                        pass
-
-            if val_stats["dice"] > best_val_dice:
-                best_val_dice = float(val_stats["dice"])
-                run_post_step(
-                    f"save best.pt (epoch {epoch})",
-                    lambda: save_checkpoint(
-                        best_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
-                    ),
-                    required=True,
-                )
-                print(f"  new best val dice {best_val_dice:.4f} -> {best_path}")
-            # last.pt is written after the best check, so it always carries the
-            # current best value; otherwise a disconnect could make resume
-            # overwrite best.pt with a worse epoch.
-            last_step_name = (
-                f"final checkpoint save: last.pt (epoch {epoch})"
-                if epoch + 1 >= int(cfg["train"]["epochs"])
-                else f"save last.pt (epoch {epoch})"
-            )
-            run_post_step(
-                last_step_name,
-                lambda: save_checkpoint(
-                    last_path, model, optimizer, scheduler, scaler, epoch, best_val_dice, cfg
-                ),
-                required=True,
-            )
+            if save_error is not None:
+                raise save_error
     except KeyboardInterrupt:  # pragma: no cover - interactive
         print("interrupted; last.pt holds the last completed epoch", file=sys.stderr)
         return 130

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -226,6 +227,31 @@ def test_metrics_csv_rejects_an_incompatible_header(tmp_path: Path) -> None:
         append_metrics_row(path, {column: 0 for column in METRICS_COLUMNS})
 
 
+def test_metrics_csv_accepts_a_legacy_header_and_keeps_its_columns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An older metrics.csv (no timing columns) still accepts rows after resume.
+
+    The new columns are appended at the end, so the old header is a prefix. Rows
+    written into that file keep the old width instead of becoming ragged.
+    """
+    path = tmp_path / "metrics.csv"
+    legacy = list(METRICS_COLUMNS[:10])
+    path.write_text(
+        ",".join(legacy) + "\n" + ",".join(["0"] * len(legacy)) + "\n", encoding="utf-8"
+    )
+
+    row = {column: 0 for column in METRICS_COLUMNS}
+    row["epoch"] = 1
+    append_metrics_row(path, row)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].split(",") == legacy, "the old header must not be rewritten"
+    assert len(lines) == 3
+    assert len(lines[2].split(",")) == len(legacy), "rows must keep the file's column count"
+    assert "older metrics header" in capsys.readouterr().err
+
+
 def test_run_info_records_provenance(tmp_path: Path) -> None:
     cfg = tiny_config()
     cfg["data"]["synthetic"] = True
@@ -425,7 +451,26 @@ def test_smoke_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, c
     assert info["mean_epoch_time_s"] is not None and info["mean_epoch_time_s"] > 0
     assert info["data_format"]["cache_sha256"] is None
     assert (run_dir / "preds" / "epoch_0000.png").is_file()
-    assert "SMOKE MODE" in capsys.readouterr().out
+
+    # Every timed part is recorded, and the parts fit inside the epoch total.
+    parts = ("train_time_s", "val_time_s", "grid_time_s", "best_save_time_s", "last_save_time_s")
+    for part in parts:
+        assert part in rows[0].split(","), f"missing {part} column"
+        assert float(first_epoch[part]) >= 0.0
+    breakdown = sum(float(first_epoch[part]) for part in parts)
+    assert breakdown <= float(first_epoch["epoch_time_s"]) + 0.1, "parts must fit in epoch_time_s"
+    assert float(first_epoch["train_time_s"]) > 0.0
+    assert float(first_epoch["val_time_s"]) > 0.0
+    assert float(first_epoch["best_save_time_s"]) > 0.0, "epoch 0 is always a new best"
+    assert float(first_epoch["last_save_time_s"]) > 0.0
+
+    output = capsys.readouterr().out
+    assert "SMOKE MODE" in output
+    assert re.search(
+        r"epoch 0: train [\d.]+ val [\d.]+ dice [\d.]+ iou [\d.]+ peak \d+MB "
+        r"\([\d.]+s; train [\d.]+s val [\d.]+s grid [\d.]+s best [\d.]+s last [\d.]+s\)",
+        output,
+    ), "the epoch line must keep the parseable prefix and add the timings"
 
 
 def test_optional_post_step_failure_warns_and_keeps_exit_code(

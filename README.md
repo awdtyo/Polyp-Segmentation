@@ -318,7 +318,7 @@ Where results go, per run folder and in the runs directory:
 
 | File | Contents |
 |---|---|
-| `<run>/metrics.csv` | one row per epoch: losses, val Dice/IoU, LR per group, epoch time |
+| `<run>/metrics.csv` | one row per epoch: losses, val Dice/IoU, LR per group, total epoch time and its breakdown (train, val, prediction grid, best.pt save, last.pt save) |
 | `<run>/eval_test.json` | mean/std Dice and IoU, n, small-lesion Dice, provenance |
 | `<run>/per_image_test.csv` | `id, dice, iou, lesion_pixels, small_lesion` per test image |
 | `<RUNS_DIR>/results.csv` | one row per run and split (never reordered or overwritten) |

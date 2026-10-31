@@ -273,3 +273,12 @@ what was decided and what it replaced.
   `python -m src.evaluate --run_dir <run> --split test` and is never used for
   model selection. `scripts/aggregate_results.py` groups the seeds per config and
   reports mean and std; a single run is never reported as the result.
+- **2026-10-31 - Epoch timing breakdown.** `metrics.csv` gains
+  `train_time_s`, `val_time_s`, `grid_time_s`, `best_save_time_s` and
+  `last_save_time_s`, appended after `epoch_time_s` so old files stay readable,
+  and the epoch log line prints them. `epoch_time_s` is now the full epoch wall
+  clock; it used to stop before the prediction grid and both checkpoint writes,
+  which is why a log line could say 37 s while the epoch took about 98 s on
+  Colab. `append_metrics_row` accepts an older header that is a prefix of the
+  current one and writes rows with that file's columns, so a resumed run keeps
+  its existing `metrics.csv`.
