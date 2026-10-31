@@ -1,1 +1,1 @@
-run_name,commit,config_file,params_m,best_val_dice,test_dice,test_iou,epochs,train_time_min
+run_name,split,config_file,git_commit,seed,epochs,params_m,best_val_dice,test_dice,test_iou,small_lesion_dice,mean_epoch_time_s,peak_gpu_mem_mb
