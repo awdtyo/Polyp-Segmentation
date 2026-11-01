@@ -66,19 +66,50 @@ Legacy files remain readable: the reader treats the old `epochs` column as `best
 ## Small-lesion definition
 
 A lesion is "small" when its foreground pixel count is below
-`data.small_lesion_area_fraction` of the image area (default `0.02`, i.e. 2% = 1311 px at
-256x256). The threshold is chosen from ground-truth mask statistics only, never from
-model scores, and is configurable in the experiment config.
+`data.small_lesion_area_fraction` of the image area (**default `0.05`, i.e. 5% =
+3277 px at 256x256**). The threshold is chosen from ground-truth mask statistics
+only, never from model scores, and is configurable in the experiment config.
 
-`small_lesion_dice` is the mean Dice over images that qualify as small. If fewer than 10
-images qualify in a dataset, the value is written as `n/a` and `small_lesion_n` is still
-recorded; `0.0` is never written for "none qualified".
+The default is 5% because it is the lowest tested threshold (1%, 2%, 3%, 5%,
+10%) at which every dataset — including the held-out Kvasir test split — has at
+least 10 qualifying images (the minimum for reporting `small_lesion_dice`; below
+10 it is written `n/a`, never `0.0`). Set on 2026-11-01 from committed
+ground-truth masks at 256x256.
+
+Per-dataset share of images qualifying as small at the 5% default
+(ground-truth masks only):
+
+| Dataset | n | qualify at 5% | share |
+|---|---|---:|---:|
+| Kvasir test | 100 | 18 | 18% |
+| Kvasir all | 1000 | 200 | 20% |
+| CVC-ClinicDB | 612 | 228 | 37% |
+| CVC-ColonDB | 380 | 227 | 60% |
+| ETIS | 196 | 141 | 72% |
+| CVC-300 | 60 | 53 | 88% |
+
+`small_lesion_dice` is the mean Dice over images that qualify as small. If fewer
+than 10 images qualify in a dataset, the value is written as `n/a` and
+`small_lesion_n` is still recorded; `0.0` is never written for "none qualified".
 
 The column can be backfilled for existing runs without re-running inference:
 `python scripts/backfill_small_lesion.py --results-csv <runs>/results.csv --runs-dir <runs>`
 
-## Backward compatibility
+## Legacy migration and backup naming
 
-Old results CSV files still load: `src/evaluate.py` accepts legacy headers, migrates them
-once on first append, and never rewrites or deletes existing rows. New columns appear only
-in newly written rows.
+Results CSVs written before the schema change have the 16-column header ending in
+`...,epochs,params_m,...,small_lesion_dice,mean_epoch_time_s,peak_gpu_mem_mb`.
+
+On the first append to such a legacy file, `src/evaluate.py`:
+
+1. Backs it up next to itself as `results.legacy.csv`. If that path already
+   exists, it uses a timestamped name `results.legacy-YYYYMMDD-HHMMSS.csv`
+   instead, so an existing backup is never overwritten.
+2. Rewrites the original once with the current header, copying existing values
+   unchanged, mapping the old `epochs` column (which held the best epoch) to
+   `best_epoch`, and leaving the new columns `config_name`, `epochs_trained` and
+   `small_lesion_n` blank.
+3. Logs that a migration happened, then resumes normal append-only behaviour.
+
+Legacy files remain readable: the reader treats the old `epochs` column as
+`best_epoch`.

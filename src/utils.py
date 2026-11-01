@@ -86,9 +86,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "num_workers": 2,
         "pin_memory": True,
         # Fraction of image area below which a lesion counts as "small" (default
-        # 2%, i.e. 1311 px at 256x256). Chosen from ground-truth mask statistics
-        # only, never from model scores.
-        "small_lesion_area_fraction": 0.02,
+        # 5%, i.e. 3277 px at 256x256). Chosen from ground-truth mask statistics
+        # only: at 5% every dataset (including Kvasir test, 18 images) has at
+        # least 10 qualifying images, so small_lesion_dice is reportable
+        # everywhere. See docs/datasets.md for the per-dataset breakdown.
+        "small_lesion_area_fraction": 0.05,
         # True only for the smoke/test data. Recorded in run_info.json so a run on
         # synthetic images can never be mistaken for a real result.
         "synthetic": False,

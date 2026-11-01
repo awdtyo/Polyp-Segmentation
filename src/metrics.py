@@ -12,9 +12,11 @@ Conventions used everywhere in this repo:
 * Per-image scores are kept, not just the mean, so small-lesion performance can be
   analysed later (AGENTS.md section 10).
 * A lesion is "small" when its foreground area is below
-  ``small_lesion_area_fraction`` of the image area (default 2%, i.e. 1311 px at
+  ``small_lesion_area_fraction`` of the image area (default 5%, i.e. 3277 px at
   256x256). The threshold is chosen from ground-truth mask statistics only, never
-  from model scores.
+  from model scores: 5% is the lowest tested threshold at which every evaluated
+  dataset, including the 100-image Kvasir test split, has at least 10 qualifying
+  images (see ``docs/datasets.md``).
 """
 
 from __future__ import annotations
@@ -27,8 +29,11 @@ import torch
 from torch import Tensor
 
 #: Below this *fraction of image area* a mask is "small"; used for reporting only.
-#: At 256x256 this is 1311 px. Configurable via ``data.small_lesion_area_fraction``.
-SMALL_LESION_AREA_FRACTION: float = 0.02
+#: At 256x256 this is 3277 px. Configurable via ``data.small_lesion_area_fraction``.
+#: Default 0.05 (5%): at this threshold every dataset (including Kvasir test,
+#: 18 images) has at least 10 qualifying images, so small_lesion_dice is
+#: reportable everywhere. Chosen from ground-truth mask statistics only.
+SMALL_LESION_AREA_FRACTION: float = 0.05
 
 
 def binarize(pred: Tensor, threshold: float = 0.5, from_logits: bool = True) -> Tensor:

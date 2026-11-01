@@ -1267,3 +1267,27 @@ checkpoints (exp003 on Kvasir val, then the full config x dataset table).
 
 Open questions (current):
 
+
+## Session 2026-11-01 (fourteenth session) - Task A-D and threshold decision
+
+### Task A: ETIS and CVC-300 preparation
+- Inspected data/raw/etis (196 images/masks, .png, 1225x966) and data/raw/cvc_300 (60 images/masks, .png, 574x500). All pairs matched, zero unmatched.
+- Prepared both via scripts/prepare_datasets.py (exit 0). Counts match registry (196/196, 60/60). No empty masks, no bad mask values.
+- Masks binarised at >127 then resized 256x256 nearest-neighbour; images resized bilinear. Tiny polyps do not vanish materially; area-fraction ranking is essentially identical at native and 256px resolution.
+
+### Task B: ground-truth mask-area statistics
+- Computed for all 6 datasets (Kvasir test, Kvasir all, CVC-ClinicDB, CVC-ColonDB, ETIS, CVC-300) at both 256px and native resolution. Resizing changes classification by at most 1-2 images per threshold.
+
+### Task C: threshold decision
+- Set data.small_lesion_area_fraction default to 0.05 (5% of image area = 3277 px at 256x256). Chosen because it is the lowest tested threshold (1%, 2%, 3%, 5%, 10%) at which every dataset including Kvasir test (18 images) has at least 10 qualifying images. Chosen from ground-truth mask statistics only.
+- Updated src/metrics.py (SMALL_LESION_AREA_FRACTION = 0.05), src/utils.py default, docs/datasets.md and docs/results_schema.md with the per-dataset qualifying shares (Kvasir test 18%, ClinicDB 37%, ColonDB 60%, ETIS 72%, CVC-300 88%).
+
+### Task D: backup naming
+- Modified src/evaluate.py _migrate_legacy_results_csv so an existing results.legacy.csv is never overwritten: if the target exists, a timestamped name results.legacy-YYYYMMDD-HHMMSS.csv is used instead. Added test_append_to_legacy_results_csv_timestamped_backup.
+
+### Task E: Colab steps (reported in final reply, not code)
+- ETIS and CVC-300 are picked up through the registry; colab_eval.ipynb's prepared-datasets cell and evaluate cell need no code edits (they already iterate over all present datasets). ONLY_RUNS is unchanged.
+
+Left to do: Milestone 8 Step 7 real-number validation on Colab (exp003 on Kvasir val, then full config x dataset table). Multi-seed (42/43/44) final comparison still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).

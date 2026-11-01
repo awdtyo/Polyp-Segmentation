@@ -563,3 +563,49 @@ def test_multi_dataset_evaluation_feeds_the_aggregate_matrix(
 def _read_aggregate(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def test_append_to_legacy_results_csv_timestamped_backup(tmp_path: Path) -> None:
+    """When results.legacy.csv already exists, the migration uses a timestamped name."""
+    legacy_header = ",".join(evaluate_mod.LEGACY_RESULTS_COLUMNS)
+    legacy_rows = [
+        "exp007_hybrid_msu_30ep,test,kvasir_seg,,/content/config_session.yaml,179aad7bdffe7999457ede82a9091bf6867cdbc7,42,18,122.764,0.908936,0.909227,0.855849,0.032487,0.000000,84.52,4524.9",
+    ]
+    results = tmp_path / "results.csv"
+    results.write_text(legacy_header + "\n" + "\n".join(legacy_rows) + "\n", encoding="utf-8")
+
+    # Pre-create the normal backup so the migration must use a timestamped name.
+    backup = tmp_path / evaluate_mod.LEGACY_BACKUP_NAME
+    backup.write_text("pre-existing backup\n", encoding="utf-8")
+
+    new_row = {
+        "run_name": "exp007_hybrid_msu_30ep_seed43",
+        "split": "test",
+        "dataset": "kvasir_seg",
+        "tta": "",
+        "config_name": "exp007_hybrid_msu_30ep_seed43",
+        "config_file": "configs/exp007_hybrid_msu.yaml",
+        "git_commit": "abc123",
+        "seed": 43,
+        "best_epoch": 18,
+        "epochs_trained": 30,
+        "params_m": "122.764",
+        "best_val_dice": "0.910000",
+        "test_dice": "0.920000",
+        "test_iou": "0.870000",
+        "test_mae": "0.030000",
+        "small_lesion_dice": "n/a",
+        "small_lesion_n": "0",
+        "mean_epoch_time_s": "85.00",
+        "peak_gpu_mem_mb": "4524.9",
+    }
+    code = evaluate_mod.append_results_row(results, new_row)
+    assert code == results
+
+    # Original backup is untouched.
+    assert backup.read_text(encoding="utf-8") == "pre-existing backup\n"
+
+    # A timestamped backup was created.
+    timestamped = list(tmp_path.glob("results.legacy-*.csv"))
+    assert len(timestamped) == 1
+    assert legacy_header in timestamped[0].read_text(encoding="utf-8")

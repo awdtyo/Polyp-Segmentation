@@ -204,6 +204,7 @@ def _migrate_legacy_results_csv(path: Path) -> None:
         rows = [dict(existing) for existing in reader]
 
     if not backup.is_file():
+        # First migration: create the backup.
         backup.write_text(
             "\n".join(
                 [",".join(legacy_columns)]
@@ -213,6 +214,24 @@ def _migrate_legacy_results_csv(path: Path) -> None:
         )
         print(
             f"Migrating legacy results CSV to the current schema; "
+            f"legacy file backed up to {backup}",
+            flush=True,
+        )
+    else:
+        # Backup already exists (e.g. results_legacy.csv created by hand on
+        # Drive). Never overwrite it; use a timestamped name instead.
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = path.parent / f"results.legacy-{timestamp}.csv"
+        backup.write_text(
+            "\n".join(
+                [",".join(legacy_columns)]
+                + [",".join(row.get(column, "") for column in legacy_columns) for row in rows]
+            ),
+            encoding="utf-8",
+        )
+        print(
+            f"Migrating legacy results CSV to the current schema; "
+            f"backup path {path.parent / LEGACY_BACKUP_NAME} already exists, "
             f"legacy file backed up to {backup}",
             flush=True,
         )
@@ -600,7 +619,7 @@ def evaluate_dataset(
         use_amp: Run the forward pass under ``torch.autocast`` (CUDA only in
             practice).
         small_lesion_area_fraction: Fraction of image area below which a lesion
-            counts as "small" (default: 2%).
+            counts as "small" (default: 5%).
 
     Returns:
         Per-image records ``{"id", "dice", "iou", "mae", "lesion_pixels",

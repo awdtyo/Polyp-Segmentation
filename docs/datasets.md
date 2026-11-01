@@ -46,12 +46,12 @@ Images and masks are paired by **filename stem** (after stripping `mask_suffix`)
 The extensions may differ and are discovered from disk, never assumed.
 
 | name | source | expected | layout | status |
-|---|---|---:|---|---|
+|---|---|---|---|---|
 | `kvasir_seg` | Kvasir-SEG | 1000 | `images/*.jpg`, `masks/*.jpg` | present; training and evaluation set |
 | `cvc_clinicdb` | CVC-ClinicDB | 612 | `images/*.png`, `masks/*.png` | present; zero-shot |
 | `cvc_colondb` | CVC-ColonDB | 380 | `images/*.png`, `masks/*.png` | present; zero-shot |
-| `etis` | ETIS-LaribPolypDB | 196 | unverified | not on the dev box yet |
-| `cvc_300` | CVC-300 | 60 | unverified | not on the dev box yet |
+| `etis` | ETIS-LaribPolypDB | 196 | `images/*.png`, `masks/*.png` | present; zero-shot (1225x966 native) |
+| `cvc_300` | CVC-300 | 60 | `images/*.png`, `masks/*.png` | present; zero-shot (574x500 native) |
 
 A dataset that is absent is **skipped with a warning**; it is only an error when
 it is requested by name (`--dataset etis`). Kvasir-SEG provides no patient or
@@ -137,7 +137,41 @@ cell, and writes:
 - `aggregate_results.csv`: the long form, one row per `(config, dataset, split,
   tta)`, for pivoting or joining.
 
-## 6. Limitations
+## 6. Small-lesion area fraction (`data.small_lesion_area_fraction`)
+
+A lesion is "small" when its foreground pixel count is below
+`data.small_lesion_area_fraction` of the image area. The threshold is **chosen
+from ground-truth mask statistics only**, never from model scores, and is
+configurable per experiment in the config file (recorded in each processed
+`meta.json`).
+
+**Default: 0.05 (5% of image area = 3277 px at 256x256).** This is the lowest of
+the tested thresholds (1%, 2%, 3%, 5%, 10%) at which every dataset — including
+the held-out Kvasir test split — has at least 10 qualifying images (the minimum
+for reporting `small_lesion_dice`; below 10 it is written `n/a`, never `0.0`).
+It was set on 2026-11-01 from the committed ground-truth masks at 256x256.
+
+Per-dataset share of images qualifying as small at the 5% default
+(ground-truth masks only):
+
+| Dataset | n | qualify at 5% | share |
+|---|---|---:|---:|
+| Kvasir test | 100 | 18 | 18% |
+| Kvasir all | 1000 | 200 | 20% |
+| CVC-ClinicDB | 612 | 228 | 37% |
+| CVC-ColonDB | 380 | 227 | 60% |
+| ETIS | 196 | 141 | 72% |
+| CVC-300 | 60 | 53 | 88% |
+
+Resizing masks from native resolution to 256x256 (nearest-neighbour after
+binarisation) changes the classification by at most one image per threshold, so
+the 256px statistics are the ones that drive reporting.
+
+Masks are resized with nearest-neighbour interpolation after binarisation at
+`mask_threshold` (`> 127`); tiny polyps do not vanish materially — the area
+fraction ranking is essentially identical at native and 256px resolution.
+
+## 7. Limitations
 
 - Every number is **single-seed and provisional**. Final tables need three seeds
   (42/43/44) on a frozen commit.
