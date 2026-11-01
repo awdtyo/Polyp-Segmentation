@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from src.metrics import (
-    SMALL_LESION_PIXELS,
+    SMALL_LESION_AREA_FRACTION,
     SegMetrics,
     binarize,
     dice_per_image,
@@ -133,7 +133,31 @@ def test_accumulator_computes_mean_and_keeps_rows() -> None:
     assert summary["iou"] == pytest.approx((0.5 + 1.0) / 2.0, abs=1e-5)
     assert [row["id"] for row in rows] == ["caseA_001", "caseA_002"]
     assert rows[0]["lesion_pixels"] == 2.0
+    # A half-filled 2x2 image is 50% foreground, well above the 2% small-lesion
+    # fraction, so it is not flagged small.
+    assert rows[0]["small_lesion"] is False
+
+
+def test_accumulator_flags_small_and_large_lesions_by_area_fraction() -> None:
+    """Small-lesion flag uses ground-truth area fraction, not absolute pixels."""
+    metrics = SegMetrics()
+    # 256x256 with a 10x10 patch = 100 px = ~0.15% of image area -> small.
+    small_target = torch.zeros(1, 1, 256, 256)
+    small_target[0, 0, 10:20, 10:20] = 1.0
+    metrics.update(torch.ones(1, 1, 256, 256), small_target, ids=["small"])
+    # 16x16 fully foreground = 100% of image area -> large.
+    big = torch.ones(1, 1, 16, 16)
+    metrics.update(big, big, ids=["big"])
+
+    rows = metrics.per_image()
     assert rows[0]["small_lesion"] is True
+    assert rows[0]["lesion_pixels"] == 100.0
+    assert rows[0]["small_lesion"] is True
+    assert rows[1]["small_lesion"] is False
+    assert rows[1]["lesion_pixels"] == 256.0
+    # The small-lesion threshold is fraction * area, not a fixed pixel count.
+    assert rows[0]["lesion_pixels"] < SMALL_LESION_AREA_FRACTION * 256 * 256
+    assert rows[1]["lesion_pixels"] > SMALL_LESION_AREA_FRACTION * 16 * 16
 
 
 def test_accumulator_flags_large_lesions() -> None:
@@ -142,7 +166,7 @@ def test_accumulator_flags_large_lesions() -> None:
     metrics.update(target, target, ids=["big"])
 
     assert metrics.per_image()[0]["small_lesion"] is False
-    assert metrics.per_image()[0]["lesion_pixels"] > SMALL_LESION_PIXELS
+    assert metrics.per_image()[0]["lesion_pixels"] > SMALL_LESION_AREA_FRACTION * 16 * 16
 
 
 def test_accumulator_empty_summary_is_zero() -> None:
@@ -161,8 +185,12 @@ def test_accumulator_reset_and_id_count_check() -> None:
 
 def test_summarize_by_size_splits_rows() -> None:
     metrics = SegMetrics()
-    metrics.update(torch.ones(1, 1, 2, 2), half_mask(), ids=["small"])  # 2 foreground pixels
-    big = torch.ones(1, 1, 16, 16)
+    # 256x256 with a 10x10 patch = 100 px (~0.15% of area) -> small.
+    small_target = torch.zeros(1, 1, 256, 256)
+    small_target[0, 0, 10:20, 10:20] = 1.0
+    # Pred all ones: intersection 100, |pred| = 65536, |target| = 100.
+    metrics.update(torch.ones(1, 1, 256, 256), small_target, ids=["small"])
+    big = torch.ones(1, 1, 256, 256)
     metrics.update(big, big, ids=["big"])
 
     summary = summarize_by_size(metrics.per_image())
@@ -170,9 +198,15 @@ def test_summarize_by_size_splits_rows() -> None:
     assert summary["n_small"] == 1
     assert summary["n_large"] == 1
     assert summary["dice_large"] == pytest.approx(1.0, abs=1e-6)
-    assert summary["dice_small"] == pytest.approx(4.0 / 6.0, abs=1e-6)
+    expected_small = 200.0 / (65536 + 100)
+    assert summary["dice_small"] == pytest.approx(expected_small, abs=1e-6)
 
 
 def test_summarize_by_size_empty_group() -> None:
+    import math
+
     summary = summarize_by_size([])
-    assert summary == {"dice_small": 0.0, "dice_large": 0.0, "n_small": 0, "n_large": 0}
+    assert summary["n_small"] == 0
+    assert summary["n_large"] == 0
+    assert math.isnan(summary["dice_small"])
+    assert math.isnan(summary["dice_large"])

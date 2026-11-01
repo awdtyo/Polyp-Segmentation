@@ -85,6 +85,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "std": list(IMAGENET_STD),
         "num_workers": 2,
         "pin_memory": True,
+        # Fraction of image area below which a lesion counts as "small" (default
+        # 2%, i.e. 1311 px at 256x256). Chosen from ground-truth mask statistics
+        # only, never from model scores.
+        "small_lesion_area_fraction": 0.02,
         # True only for the smoke/test data. Recorded in run_info.json so a run on
         # synthetic images can never be mistaken for a real result.
         "synthetic": False,
@@ -280,6 +284,9 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         problems.append("data.cache_path must be a string ('' disables the cache)")
     if not isinstance(data["mask_threshold"], int):
         problems.append("data.mask_threshold must be an int")
+    small_lesion_frac = data["small_lesion_area_fraction"]
+    if not isinstance(small_lesion_frac, (int, float)) or not 0.0 < float(small_lesion_frac) <= 1.0:
+        problems.append("data.small_lesion_area_fraction must be a number in (0, 1]")
     ratios = data["split_ratios"]
     if not isinstance(ratios, (list, tuple)) or len(ratios) != 3:
         problems.append("data.split_ratios must be a list of 3 numbers")

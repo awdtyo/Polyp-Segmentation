@@ -11,18 +11,24 @@ Conventions used everywhere in this repo:
   is the usual convention for a smoothed ratio with ``eps > 0``.
 * Per-image scores are kept, not just the mean, so small-lesion performance can be
   analysed later (AGENTS.md section 10).
+* A lesion is "small" when its foreground area is below
+  ``small_lesion_area_fraction`` of the image area (default 2%, i.e. 1311 px at
+  256x256). The threshold is chosen from ground-truth mask statistics only, never
+  from model scores.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 import torch
 from torch import Tensor
 
-#: Below this many foreground pixels a mask is "small"; used for reporting only.
-SMALL_LESION_PIXELS = 32
+#: Below this *fraction of image area* a mask is "small"; used for reporting only.
+#: At 256x256 this is 1311 px. Configurable via ``data.small_lesion_area_fraction``.
+SMALL_LESION_AREA_FRACTION: float = 0.02
 
 
 def binarize(pred: Tensor, threshold: float = 0.5, from_logits: bool = True) -> Tensor:
@@ -118,6 +124,8 @@ class SegMetrics:
 
     threshold: float = 0.5
     from_logits: bool = True
+    #: Fraction of image area below which a lesion counts as "small".
+    small_lesion_area_fraction: float = SMALL_LESION_AREA_FRACTION
     rows: list[dict[str, float | str | bool]] = field(default_factory=list)
 
     def update(self, pred: Tensor, target: Tensor, ids: Sequence[str] | None = None) -> None:
@@ -135,6 +143,9 @@ class SegMetrics:
         dice = dice_per_image(binary, target)
         iou = iou_per_image(binary, target)
         lesion = _flatten_per_image(target).sum(dim=1)
+        # Image area for the area-fraction small-lesion rule.
+        area = float(target.shape[-2] * target.shape[-1])
+        small_threshold = self.small_lesion_area_fraction * area
         batch = dice.shape[0]
         if ids is not None and len(ids) != batch:
             raise ValueError(f"Got {len(ids)} ids for a batch of {batch}")
@@ -145,7 +156,8 @@ class SegMetrics:
                     "dice": float(dice[i]),
                     "iou": float(iou[i]),
                     "lesion_pixels": float(lesion[i]),
-                    "small_lesion": bool(lesion[i] < SMALL_LESION_PIXELS),
+                    "image_area": area,
+                    "small_lesion": bool(lesion[i] < small_threshold),
                 }
             )
 
@@ -225,8 +237,8 @@ def summarize_by_size(rows: Iterable[dict[str, float | str | bool]]) -> dict[str
     small = [float(row["dice"]) for row in rows if row["small_lesion"]]
     large = [float(row["dice"]) for row in rows if not row["small_lesion"]]
     return {
-        "dice_small": sum(small) / len(small) if small else 0.0,
-        "dice_large": sum(large) / len(large) if large else 0.0,
+        "dice_small": sum(small) / len(small) if small else float("nan"),
+        "dice_large": sum(large) / len(large) if large else float("nan"),
         "n_small": len(small),
         "n_large": len(large),
     }

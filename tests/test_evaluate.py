@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -90,8 +91,40 @@ def test_summarize_rows_matches_hand_computed_values() -> None:
     assert summary["iou_mean"] == pytest.approx(1.0 / 3.0)
     assert summary["dice_std"] == pytest.approx(0.5)  # sample std of 0.5, 1.0, 0.0
     assert summary["mae_mean"] == pytest.approx(0.3)
-    assert summary["small_lesion_dice"] == pytest.approx(0.5)
+    # Only one image qualifies as small (< 10), so small-lesion Dice is NaN.
+    assert math.isnan(summary["small_lesion_dice"])
     assert summary["small_lesion_n"] == 1
+
+
+def test_summarize_rows_small_lesion_returns_mean_when_enough_qualify() -> None:
+    """With >= 10 small lesions, small_lesion_dice is the mean over them."""
+    rows = []
+    for index in range(12):
+        rows.append(
+            {
+                "id": f"s{index}",
+                "dice": 0.5 + 0.01 * index,
+                "iou": 0.3,
+                "mae": 0.2,
+                "lesion_pixels": 10.0,
+                "small_lesion": True,
+            }
+        )
+    for index in range(3):
+        rows.append(
+            {
+                "id": f"l{index}",
+                "dice": 0.9,
+                "iou": 0.8,
+                "mae": 0.1,
+                "lesion_pixels": 500.0,
+                "small_lesion": False,
+            }
+        )
+    summary = evaluate_mod.summarize_rows(rows)
+    assert summary["small_lesion_n"] == 12
+    expected = sum(0.5 + 0.01 * i for i in range(12)) / 12.0
+    assert summary["small_lesion_dice"] == pytest.approx(expected, abs=1e-6)
 
 
 def test_output_names_add_the_tta_suffix() -> None:
@@ -126,7 +159,8 @@ def test_evaluate_writes_files_and_one_row(smoke_run: Path, tmp_path: Path) -> N
     assert payload["n"] == 2
     assert payload["checkpoint"] == "best"
     assert payload["seed"] == 42
-    assert payload["epochs"] == 1
+    assert payload["best_epoch"] == 1
+    assert payload["epochs_trained"] == 1
     assert payload["params_total"] > 0
     assert payload["params_m"] == pytest.approx(payload["params_total"] / 1e6, rel=1e-6)
     assert payload["threshold"] == 0.5
@@ -135,7 +169,15 @@ def test_evaluate_writes_files_and_one_row(smoke_run: Path, tmp_path: Path) -> N
     with per_image_path.open(newline="", encoding="utf-8") as handle:
         per_image = list(csv.DictReader(handle))
     assert len(per_image) == 2
-    assert set(per_image[0]) == {"id", "dice", "iou", "mae", "lesion_pixels", "small_lesion"}
+    assert set(per_image[0]) == {
+        "id",
+        "dice",
+        "iou",
+        "mae",
+        "lesion_pixels",
+        "image_area",
+        "small_lesion",
+    }
     assert payload["dice_mean"] == pytest.approx(
         sum(float(row["dice"]) for row in per_image) / len(per_image), abs=1e-6
     )
@@ -151,8 +193,11 @@ def test_evaluate_writes_files_and_one_row(smoke_run: Path, tmp_path: Path) -> N
     assert row["split"] == "val"
     assert row["dataset"] == TRAIN_DATASET
     assert row["tta"] == ""
+    assert row["config_name"] == RUN_NAME
     assert row["seed"] == "42"
-    assert row["epochs"] == "1"
+    assert row["best_epoch"] == "1"
+    assert row["epochs_trained"] == "1"
+    assert row["small_lesion_n"] == "0"
     assert float(row["test_dice"]) == pytest.approx(payload["dice_mean"], abs=1e-6)
     assert float(row["test_iou"]) == pytest.approx(payload["iou_mean"], abs=1e-6)
     assert float(row["test_mae"]) == pytest.approx(payload["mae_mean"], abs=1e-6)
@@ -343,6 +388,66 @@ def test_results_csv_refuses_a_different_header(tmp_path: Path, smoke_run: Path)
     )
     assert code == evaluate_mod.EXIT_FAILURE
     assert results.read_text(encoding="utf-8") == "run_name,dice\nold,0.5\n"
+
+
+def test_append_to_legacy_results_csv_migrates_once(tmp_path: Path, smoke_run: Path) -> None:
+    """Appending to a legacy 16-column file backs it up, migrates it, and keeps old values."""
+    legacy_header = ",".join(evaluate_mod.LEGACY_RESULTS_COLUMNS)
+    legacy_rows = [
+        "exp006_all_concat_30ep,test,kvasir_seg,,/content/config_session.yaml,b1b3ded85e1411adb6eb3a079ef4029230eb197f,42,20,127.778,0.909645,0.926230,0.875182,0.025532,0.000000,32.80,4550.1",
+    ]
+    results = tmp_path / "results.csv"
+    results.write_text(legacy_header + "\n" + "\n".join(legacy_rows) + "\n", encoding="utf-8")
+
+    new_row = {
+        "run_name": "exp006_all_concat_30ep_seed43",
+        "split": "test",
+        "dataset": "kvasir_seg",
+        "tta": "",
+        "config_name": "exp006_all_concat_30ep_seed43",
+        "config_file": "configs/exp006_all_concat.yaml",
+        "git_commit": "abc123",
+        "seed": 43,
+        "best_epoch": 20,
+        "epochs_trained": 30,
+        "params_m": "127.778",
+        "best_val_dice": "0.910000",
+        "test_dice": "0.920000",
+        "test_iou": "0.870000",
+        "test_mae": "0.030000",
+        "small_lesion_dice": "n/a",
+        "small_lesion_n": "0",
+        "mean_epoch_time_s": "33.00",
+        "peak_gpu_mem_mb": "4550.1",
+    }
+    code = evaluate_mod.append_results_row(results, new_row)
+    assert code == results
+
+    # Backup created next to the file.
+    backup = results.parent / evaluate_mod.LEGACY_BACKUP_NAME
+    assert backup.is_file()
+    backup_text = backup.read_text(encoding="utf-8")
+    assert legacy_header in backup_text
+    assert "exp006_all_concat_30ep,test,kvasir_seg,,/content/config_session.yaml," in backup_text
+
+    # Old values are identical after migration.
+    migrated = list(csv.DictReader(results.open(newline="", encoding="utf-8")))
+    old = migrated[0]
+    assert old["run_name"] == "exp006_all_concat_30ep"
+    assert old["best_epoch"] == "20"  # old ``epochs`` became ``best_epoch``
+    assert old["config_name"] == ""  # new column blank for legacy rows
+    assert old["epochs_trained"] == ""  # new column blank for legacy rows
+    assert old["test_dice"] == "0.926230"
+    assert old["small_lesion_dice"] == "0.000000"
+
+    # The new row carries all new columns.
+    new = migrated[1]
+    assert new["config_name"] == "exp006_all_concat_30ep_seed43"
+    assert new["best_epoch"] == "20"
+    assert new["epochs_trained"] == "30"
+    assert new["small_lesion_dice"] == "n/a"
+    assert new["small_lesion_n"] == "0"
+    assert list(migrated[0]) == list(evaluate_mod.RESULTS_COLUMNS)
 
 
 def test_config_override_is_read_and_recorded(isolated_test_run: Path, tmp_path: Path) -> None:

@@ -66,6 +66,7 @@ import argparse
 import copy
 import csv
 import json
+import math
 import statistics
 import sys
 import time
@@ -78,13 +79,50 @@ from torch.utils.data import DataLoader
 
 from src.data_registry import DatasetSpec, RegistryError, get_spec, resolve_data_root
 from src.datasets import PolypDataset, read_split
-from src.metrics import SegMetrics, summarize_by_size
+from src.metrics import SegMetrics, SMALL_LESION_AREA_FRACTION, summarize_by_size
 from src.models.net import build_model, count_parameters
 from src.utils import ConfigError, load_config, set_seed
 
 #: Columns of the results CSV, in order. ``split``, ``dataset`` and ``tta`` are
 #: needed so every variation of a run can coexist and be told apart.
+#:
+#: ``best_epoch`` is the epoch at which ``best.pt`` was saved (the model-selection
+#: signal) and ``epochs_trained`` is the total number of epochs run, read from the
+#: run's ``metrics.csv``. The old ``epochs`` column held the best epoch and is
+#: retired: new files use ``best_epoch`` / ``epochs_trained`` instead. Legacy
+#: files that still carry ``epochs`` are migrated once on first append (see
+#: :func:`_migrate_legacy_results_csv`); ``epochs` is then read as ``best_epoch``
+#: by the reader and the aggregator.
+#: ``config_name`` records the experiment identity (``cfg["run"]["name"]``) so
+#: aggregation can group by experiment instead of by the session config path.
+#: ``small_lesion_n`` records how many images qualified as small lesions.
 RESULTS_COLUMNS: tuple[str, ...] = (
+    "run_name",
+    "split",
+    "dataset",
+    "tta",
+    "config_name",
+    "config_file",
+    "git_commit",
+    "seed",
+    "best_epoch",
+    "epochs_trained",
+    "params_m",
+    "best_val_dice",
+    "test_dice",
+    "test_iou",
+    "test_mae",
+    "small_lesion_dice",
+    "small_lesion_n",
+    "mean_epoch_time_s",
+    "peak_gpu_mem_mb",
+)
+
+#: Header of results CSV files written before the schema migration. The only
+#: difference from :data:`RESULTS_COLUMNS` is that ``epochs`` (the best epoch)
+#: appears where ``best_epoch`` / ``epochs_trained`` now live, and
+#: ``config_name`` / ``small_lesion_n`` are absent.
+LEGACY_RESULTS_COLUMNS: tuple[str, ...] = (
     "run_name",
     "split",
     "dataset",
@@ -105,6 +143,96 @@ RESULTS_COLUMNS: tuple[str, ...] = (
 
 #: Default results CSV, relative to the repository root.
 DEFAULT_RESULTS_CSV = Path("results") / "results.csv"
+
+#: Backup file written next to a legacy results CSV before its one-time
+#: migration to the current header.
+LEGACY_BACKUP_NAME = "results.legacy.csv"
+
+#: Seed-suffix patterns stripped from a run name to obtain the experiment
+#: identity used for grouping (``exp005_seed43`` → ``exp005``).
+SEED_SUFFIX_PATTERNS = (r"_seed\d+$", r"_s\d+$")
+
+
+def experiment_key(run_name: str) -> str:
+    """Return the experiment identity for a run name.
+
+    Trailing seed suffixes (``_seed<N>`` and ``_s<N>``) are stripped so that the
+    seeds of one experiment group together and are never merged with a different
+    experiment that happens to share a session config path.
+
+    Args:
+        run_name: Value of the ``run_name`` column (equals ``cfg["run"]["name"]``).
+
+    Returns:
+        The experiment name with any trailing seed suffix removed.
+    """
+    import re
+
+    key = run_name
+    for pattern in SEED_SUFFIX_PATTERNS:
+        key = re.sub(pattern, "", key)
+    return key
+
+
+def _is_legacy_results_header(header: Sequence[str]) -> bool:
+    """True when ``header`` is exactly the pre-migration results schema."""
+    return list(header) == list(LEGACY_RESULTS_COLUMNS)
+
+
+def _is_current_results_header(header: Sequence[str]) -> bool:
+    """True when ``header`` is exactly the current results schema."""
+    return list(header) == list(RESULTS_COLUMNS)
+
+
+def _migrate_legacy_results_csv(path: Path) -> None:
+    """Back up and rewrite a legacy results CSV to the current schema.
+
+    The legacy file is copied to ``results.legacy.csv`` next to it (only the
+    first migration creates the backup). The original is rewritten with the
+    current header: every existing column is copied unchanged, the old
+    ``epochs`` column becomes ``best_epoch``, and the new columns
+    (``config_name``, ``epochs_trained``, ``small_lesion_n``) are left blank.
+
+    Args:
+        path: Path to the legacy results CSV.
+    """
+    backup = path.parent / LEGACY_BACKUP_NAME
+    rows: list[dict[str, str]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        legacy_columns = list(reader.fieldnames)
+        rows = [dict(existing) for existing in reader]
+
+    if not backup.is_file():
+        backup.write_text(
+            "\n".join(
+                [",".join(legacy_columns)]
+                + [",".join(row.get(column, "") for column in legacy_columns) for row in rows]
+            ),
+            encoding="utf-8",
+        )
+        print(
+            f"Migrating legacy results CSV to the current schema; "
+            f"legacy file backed up to {backup}",
+            flush=True,
+        )
+
+    new_rows: list[dict[str, str]] = []
+    for row in rows:
+        new_row: dict[str, str] = {}
+        for column in RESULTS_COLUMNS:
+            if column == "best_epoch":
+                new_row[column] = row.get("epochs", "")
+            elif column in LEGACY_RESULTS_COLUMNS:
+                new_row[column] = row.get(column, "")
+            else:
+                new_row[column] = ""
+        new_rows.append(new_row)
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(RESULTS_COLUMNS))
+        writer.writeheader()
+        writer.writerows(new_rows)
 
 #: Dataset evaluated through the committed split files when ``--dataset`` is not
 #: given. Every other dataset is read zero-shot from ``processed/``.
@@ -459,6 +587,7 @@ def evaluate_dataset(
     *,
     tta_flip: bool = False,
     use_amp: bool = False,
+    small_lesion_area_fraction: float = SMALL_LESION_AREA_FRACTION,
 ) -> list[dict[str, float | str | bool]]:
     """Run a model over a loader and return one metric row per image.
 
@@ -470,12 +599,18 @@ def evaluate_dataset(
             probability maps before thresholding.
         use_amp: Run the forward pass under ``torch.autocast`` (CUDA only in
             practice).
+        small_lesion_area_fraction: Fraction of image area below which a lesion
+            counts as "small" (default: 2%).
 
     Returns:
         Per-image records ``{"id", "dice", "iou", "mae", "lesion_pixels",
         "small_lesion"}``.
     """
-    metrics = SegMetrics(threshold=THRESHOLD, from_logits=False)
+    metrics = SegMetrics(
+        threshold=THRESHOLD,
+        from_logits=False,
+        small_lesion_area_fraction=small_lesion_area_fraction,
+    )
     mae_values: list[float] = []
     model.eval()
     with torch.no_grad():
@@ -514,6 +649,12 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     iou = [float(row["iou"]) for row in rows]
     mae = [float(row["mae"]) for row in rows]
     by_size = summarize_by_size(rows)
+    n_small = int(by_size["n_small"])
+    dice_small = float(by_size["dice_small"])
+    # Fewer than 10 qualifying images: no reliable small-lesion estimate; never
+    # report 0.0 for "none qualified".
+    if n_small < 10:
+        dice_small = float("nan")
     return {
         "dice_mean": statistics.fmean(dice) if dice else 0.0,
         "dice_std": statistics.stdev(dice) if len(dice) > 1 else 0.0,
@@ -522,8 +663,8 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
         "mae_mean": statistics.fmean(mae) if mae else 0.0,
         "mae_std": statistics.stdev(mae) if len(mae) > 1 else 0.0,
         "n": float(len(rows)),
-        "small_lesion_dice": float(by_size["dice_small"]),
-        "small_lesion_n": float(by_size["n_small"]),
+        "small_lesion_dice": dice_small,
+        "small_lesion_n": float(n_small),
     }
 
 
@@ -570,7 +711,7 @@ def write_per_image_csv(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> 
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    columns = ("id", "dice", "iou", "mae", "lesion_pixels", "small_lesion")
+    columns = ("id", "dice", "iou", "mae", "lesion_pixels", "image_area", "small_lesion")
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(columns))
         writer.writeheader()
@@ -582,6 +723,7 @@ def write_per_image_csv(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> 
                     "iou": round(float(row["iou"]), 6),
                     "mae": round(float(row["mae"]), 6),
                     "lesion_pixels": int(float(row["lesion_pixels"])),
+                    "image_area": int(float(row.get("image_area", 0))),
                     "small_lesion": int(bool(row["small_lesion"])),
                 }
             )
@@ -612,15 +754,39 @@ def append_results_row(
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
+    existing_header: list[str] = []
     if out.is_file():
         with out.open("r", newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
-            if reader.fieldnames != list(RESULTS_COLUMNS):
-                raise EvaluateError(
-                    f"{out} has an incompatible header {reader.fieldnames}; "
-                    f"expected {list(RESULTS_COLUMNS)}. Fix or move the file; rows are never rewritten."
-                )
+            existing_header = list(reader.fieldnames) if reader.fieldnames else []
             rows = [dict(existing) for existing in reader]
+
+    if _is_legacy_results_header(existing_header):
+        # One-time migration: back up the legacy file, rewrite it with the
+        # current schema, then append normally below. Existing values are
+        # preserved; new columns start blank (best_epoch comes from the old
+        # ``epochs`` column). Rows were read above before the rewrite, so they
+        # still carry legacy keys and are remapped after migration.
+        _migrate_legacy_results_csv(out)
+        existing_header = list(RESULTS_COLUMNS)
+        remapped: list[dict[str, str]] = []
+        for legacy in rows:
+            new_row: dict[str, str] = {}
+            for column in RESULTS_COLUMNS:
+                if column == "best_epoch":
+                    new_row[column] = legacy.get("epochs", "")
+                elif column in LEGACY_RESULTS_COLUMNS:
+                    new_row[column] = legacy.get(column, "")
+                else:
+                    new_row[column] = ""
+            remapped.append(new_row)
+        rows = remapped
+
+    if out.is_file() and existing_header != list(RESULTS_COLUMNS):
+        raise EvaluateError(
+            f"{out} has an incompatible header {existing_header}; "
+            f"expected {list(RESULTS_COLUMNS)}. Fix or move the file; rows are never rewritten."
+        )
 
     key = ("run_name", "split", "dataset", "tta")
     new_row = {column: str(row[column]) for column in RESULTS_COLUMNS}
@@ -664,6 +830,28 @@ def _checkpoint_epochs(checkpoint: Mapping[str, Any], cfg: Mapping[str, Any]) ->
     if isinstance(epoch, int) and epoch >= 0:
         return epoch + 1
     return int(cfg["train"]["epochs"])
+
+
+def _epochs_trained(run_dir: Path) -> int | None:
+    """Total epochs completed, read from the run's ``metrics.csv``.
+
+    Args:
+        run_dir: Run folder written by :mod:`src.train`.
+
+    Returns:
+        The number of data rows in ``metrics.csv`` (one per epoch), or ``None``
+        when the file is missing.
+    """
+    path = run_dir / "metrics.csv"
+    if not path.is_file():
+        return None
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)  # header
+            return sum(1 for _ in reader)
+    except (OSError, StopIteration):
+        return None
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -741,7 +929,14 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         started = time.time()
         try:
-            rows = evaluate_dataset(model, loader, device, tta_flip=bool(args.tta_flip), use_amp=use_amp)
+            rows = evaluate_dataset(
+                model,
+                loader,
+                device,
+                tta_flip=bool(args.tta_flip),
+                use_amp=use_amp,
+                small_lesion_area_fraction=float(cfg["data"]["small_lesion_area_fraction"]),
+            )
         except EvaluateError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return EXIT_FAILURE
@@ -759,7 +954,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             "config_override": str(args.config) if args.config is not None else None,
             "git_commit": run_info.get("git_commit"),
             "seed": int(cfg["run"]["seed"]),
-            "epochs": _checkpoint_epochs(checkpoint, cfg),
+            "config_name": cfg["run"]["name"],
+            "best_epoch": _checkpoint_epochs(checkpoint, cfg),
+            "epochs_trained": _epochs_trained(run_dir),
             "image_size": int(cfg["data"]["image_size"]),
             "threshold": THRESHOLD,
             "device": str(device),
@@ -790,16 +987,29 @@ def main(argv: Iterable[str] | None = None) -> int:
             "split": row_split,
             "dataset": spec.name,
             "tta": tta_label,
+            "config_name": payload["config_name"],
             "config_file": payload["config_file"],
             "git_commit": payload["git_commit"] or "",
             "seed": payload["seed"],
-            "epochs": payload["epochs"],
+            "best_epoch": payload["best_epoch"],
+            "epochs_trained": payload["epochs_trained"],
             "params_m": f"{payload['params_m']:.3f}",
             "best_val_dice": f"{payload['best_val_dice']:.6f}",
             "test_dice": f"{summary['dice_mean']:.6f}",
             "test_iou": f"{summary['iou_mean']:.6f}",
             "test_mae": f"{summary['mae_mean']:.6f}",
-            "small_lesion_dice": f"{summary['small_lesion_dice']:.6f}",
+            "small_lesion_dice": (
+                "n/a"
+                if (
+                    summary["small_lesion_dice"] is None
+                    or (
+                        isinstance(summary["small_lesion_dice"], float)
+                        and math.isnan(summary["small_lesion_dice"])
+                    )
+                )
+                else f"{summary['small_lesion_dice']:.6f}"
+            ),
+            "small_lesion_n": str(int(summary["small_lesion_n"])),
             "mean_epoch_time_s": ""
             if payload["mean_epoch_time_s"] is None
             else f"{float(payload['mean_epoch_time_s']):.2f}",

@@ -4,7 +4,7 @@ Living status file. AGENTS.md is the specification; this file records what is
 actually done, what is in flight, and what is blocked. Update it at the end of
 every session.
 
-Last updated: 2026-10-31.
+Last updated: 2026-11-01.
 
 ## Milestone checklist
 
@@ -875,9 +875,14 @@ first), `docs/datasets.md` and the results table.
 Open questions (current):
 
 - Commit `d5508ca` ("fusion: add the xattn_swap preset and the exp013 config")
-  is model code outside the Milestone 8 scope and is on local `main`, one commit
-  ahead of `origin/main` (`179aad7`). Keep it, or leave it unpushed until after
-  Milestone 8? It was not created by this session's Milestone 8 work.
+  is model code outside the Milestone 8 scope. It is a dangling commit in the
+  reflog (HEAD@{8}) only -- it is NOT on `main` or `origin/main` and not
+  reachable from any branch. It touches model code only
+  (`src/models/fusion.py`, `src/utils.py`: adds the `xattn_swap` preset and
+  `configs/exp013_hybrid_swap.yaml`) plus tests/README. It does not touch
+  training code, the Kvasir split, or `src/evaluate.py` /
+  `scripts/aggregate_results.py`, so it has no bearing on Milestone 8. Leave it
+  dangling (or push it separately); do not merge it into this session's work.
 
 ## Session 2026-10-31 (twelfth session) - Milestone 8, Step 1 + Step 2
 
@@ -1217,6 +1222,48 @@ exp005, exp006 and exp007 on every present dataset and report the full config x
 dataset table, labelled single-seed and provisional.
 `notebooks/colab_eval.ipynb` runs exactly that flow.
 
-Open questions (current): unchanged (commit `d5508ca` is unpushed model code
-outside M8).
+## Session 2026-11-01 (thirteenth session) - results-schema fixes (Problems 1-5)
+
+Fixed in `src/evaluate.py`, `scripts/aggregate_results.py`, `src/metrics.py`,
+`src/utils.py`, `scripts/backfill_small_lesion.py` (new), tests, and
+`notebooks/colab_eval.ipynb`. Tests: 283 passed.
+
+- Problem 1 (grouping): aggregation now groups by experiment identity
+  (`run_name` with `_seed<N>`/`_s<N>` stripped via `experiment_key()`), never
+  by `config_file`. New `config_name` column recorded in results rows; legacy
+  rows group on `run_name` alone. Fix verified against the 15-row real
+  `results.csv`: produces 5 separate groups (exp003/005/006/007/008), each
+  n=1, std n/a.
+- Problem 2 (small lesions): "small" is now a fraction of image area
+  (`data.small_lesion_area_fraction`, default 0.02 = 1311 px at 256x256),
+  chosen from ground-truth mask statistics only. Mask-area distribution printed
+  (Kvasir test: <1%=1, <2%=2, <5%=18; ClinicDB: <1%=13, <2%=61; ColonDB:
+  <1%=45, <2%=99). `small_lesion_dice` is NaN/"n/a" when fewer than 10 images
+  qualify (never 0.0); `small_lesion_n` is always recorded. New
+  `scripts/backfill_small_lesion.py` recomputes both columns from existing
+  per-image files (no inference rerun). `per_image_*.csv` gained an
+  `image_area` column.
+- Problem 3 (exp008 MAE ~0.11): read-only diagnosis complete. MAE is computed
+  once on sigmoid probabilities vs binary GT at the correct resolution, so the
+  high MAE with decent Dice is consistent with under-confident/poorly calibrated
+  probabilities on exp008, not an evaluation bug. Exact Colab diagnostic cell
+  prepared (probability inside/background lesion, 0.1-0.9 pixel fraction, MAE
+  on probabilities vs thresholded masks, for exp008 vs exp006). Real checkpoints
+  live only on Colab, so inference cannot be re-run locally.
+- Problem 4 (`epochs` column): new results header uses `best_epoch` (checkpoint
+  epoch+1) and `epochs_trained` (rows in metrics.csv); `epochs` is dropped from
+  new files. Legacy 16-column files are migrated once on first append: backed up
+  to `results.legacy.csv`, rewritten with the new header (old `epochs` ->
+  `best_epoch`, new columns blank), then normal append-only behaviour. Reader
+  and aggregator treat legacy `epochs` as `best_epoch`. Test added covering the
+  migration (backup exists, old values identical, new row carries all columns).
+- Problem 5 (colab_eval.ipynb): aggregate cell now emits `--tta flip` only when
+  TTA is on (was `--tta ""` always); evaluate cell now uses
+  `capture_output=True` and prints stdout/stderr on failure; aggregate prints the
+  run folders picked up. Drive paths remain in the config cell (not hard-coded).
+
+Milestone 8 remains: Step 7's real-number validation needs the Colab
+checkpoints (exp003 on Kvasir val, then the full config x dataset table).
+
+Open questions (current):
 

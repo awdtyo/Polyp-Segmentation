@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import statistics
 import sys
@@ -48,6 +49,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
+
+from src.evaluate import experiment_key
 
 #: Suffix appended by the Colab launcher / probe protocol, e.g. ``_seed43``.
 SEED_SUFFIX = re.compile(r"_seed\d+$")
@@ -63,18 +66,23 @@ SPLITS: tuple[str, ...] = ("test", "val")
 #: Columns of the long-form aggregate CSV.
 AGGREGATE_COLUMNS: tuple[str, ...] = (
     "config",
+    "config_name",
     "dataset",
     "split",
     "tta",
     "n_seeds",
+    "best_epoch",
+    "epochs_trained",
     "dice_mean",
     "dice_std",
     "iou_mean",
     "iou_std",
     "mae_mean",
     "small_lesion_dice",
+    "small_lesion_n",
     "params_m",
     "mean_epoch_time_s",
+    "peak_gpu_mem_mb",
 )
 
 #: Marker for "not evaluated" or "no sample std is defined" (one seed only).
@@ -90,7 +98,9 @@ class RunResult:
 
     Attributes:
         run_name: Folder name.
-        config: Config identity (config file stem, seed suffix stripped).
+        config: Config identity (run name with any ``_seed<N>`` / ``_s<N>``
+            suffix stripped). Different experiments are never merged into one
+            group.
         seed: Training seed.
         dataset: Dataset name, e.g. ``kvasir_seg``.
         split: ``test`` or ``val``.
@@ -99,8 +109,12 @@ class RunResult:
         iou_mean: Mean per-image IoU.
         mae_mean: Mean per-image MAE, or ``None`` when the file predates MAE.
         small_lesion_dice: Mean Dice on images below the small-lesion threshold.
+        small_lesion_n: Number of images that qualified as small lesions.
         params_m: Parameters in millions.
         mean_epoch_time_s: Mean epoch time from ``run_info.json`` (may be None).
+        best_epoch: Epoch at which ``best.pt`` was saved (may be None).
+        epochs_trained: Total epochs run, from ``metrics.csv`` (may be None).
+        peak_gpu_mem_mb: Peak GPU memory in MB (may be None).
         per_image_dice: ``{image_id: dice}`` for the paired comparison.
     """
 
@@ -114,8 +128,12 @@ class RunResult:
     iou_mean: float
     mae_mean: float | None
     small_lesion_dice: float
-    params_m: float
-    mean_epoch_time_s: float | None
+    small_lesion_n: int = 0
+    params_m: float = 0.0
+    mean_epoch_time_s: float | None = None
+    best_epoch: int | None = None
+    epochs_trained: int | None = None
+    peak_gpu_mem_mb: float | None = None
     per_image_dice: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -127,18 +145,20 @@ class RunResult:
 def config_key(payload: Mapping[str, Any], run_name: str) -> str:
     """Return the config identity, ignoring the seed suffix.
 
+    Grouping is always by experiment (the run name with any ``_seed<N>`` /
+    ``_s<N>`` suffix stripped). ``config_file`` (the session config path) is
+    deliberately *not* used, since every Colab row historically shares
+    ``/content/config_session.yaml`` and different experiments would otherwise be
+    averaged as if they were seeds.
+
     Args:
         payload: Parsed ``eval_*.json``.
-        run_name: Run folder name, used as a fallback.
+        run_name: Run folder name / ``run_name`` column.
 
     Returns:
-        Config file stem when the payload records one, else the run name with a
-        ``_seed<N>`` suffix removed.
+        The experiment name with a trailing seed suffix removed.
     """
-    config_file = payload.get("config_file")
-    if isinstance(config_file, str) and config_file.strip():
-        return Path(config_file).stem
-    return SEED_SUFFIX.sub("", run_name)
+    return experiment_key(run_name)
 
 
 def parse_eval_name(stem: str) -> tuple[str, str, str] | None:
@@ -195,6 +215,9 @@ def load_run(run_dir: Path) -> list[RunResult]:
                 per_image[str(row["id"])] = float(row["dice"])
         epoch_time = payload.get("mean_epoch_time_s")
         mae = payload.get("mae_mean")
+        small_lesion_dice = payload.get("small_lesion_dice")
+        if small_lesion_dice is None:
+            small_lesion_dice = 0.0
         results.append(
             RunResult(
                 run_name=run_dir.name,
@@ -206,9 +229,13 @@ def load_run(run_dir: Path) -> list[RunResult]:
                 dice_mean=float(payload["dice_mean"]),
                 iou_mean=float(payload["iou_mean"]),
                 mae_mean=None if mae is None else float(mae),
-                small_lesion_dice=float(payload.get("small_lesion_dice", 0.0)),
+                small_lesion_dice=float(small_lesion_dice),
+                small_lesion_n=int(payload.get("small_lesion_n", 0) or 0),
                 params_m=float(payload.get("params_m", 0.0)),
                 mean_epoch_time_s=None if epoch_time is None else float(epoch_time),
+                best_epoch=payload.get("best_epoch"),
+                epochs_trained=payload.get("epochs_trained"),
+                peak_gpu_mem_mb=payload.get("peak_gpu_mem_mb"),
                 per_image_dice=per_image,
             )
         )
@@ -287,9 +314,13 @@ def summarize_runs(runs: Sequence[RunResult]) -> list[dict[str, Any]]:
             iou_mean, iou_std = _mean_std([run.iou_mean for run in items])
             mae_values = [run.mae_mean for run in items if run.mae_mean is not None]
             epoch_times = [run.mean_epoch_time_s for run in items if run.mean_epoch_time_s is not None]
+            peak_mems = [run.peak_gpu_mem_mb for run in items if run.peak_gpu_mem_mb is not None]
+            best_epochs = [run.best_epoch for run in items if run.best_epoch is not None]
+            epoch_traineds = [run.epochs_trained for run in items if run.epochs_trained is not None]
             rows.append(
                 {
                     "config": config,
+                    "config_name": config,
                     "dataset": cell[0],
                     "split": cell[1],
                     "tta": cell[2],
@@ -300,8 +331,12 @@ def summarize_runs(runs: Sequence[RunResult]) -> list[dict[str, Any]]:
                     "iou_std": iou_std,
                     "mae_mean": statistics.fmean(mae_values) if mae_values else None,
                     "small_lesion_dice": statistics.fmean([run.small_lesion_dice for run in items]),
+                    "small_lesion_n": items[0].small_lesion_n,
                     "params_m": items[0].params_m,
+                    "best_epoch": statistics.fmean(best_epochs) if best_epochs else None,
+                    "epochs_trained": statistics.fmean(epoch_traineds) if epoch_traineds else None,
                     "mean_epoch_time_s": statistics.fmean(epoch_times) if epoch_times else None,
+                    "peak_gpu_mem_mb": statistics.fmean(peak_mems) if peak_mems else None,
                     "seeds": [run.seed for run in items],
                 }
             )
@@ -492,23 +527,50 @@ def write_aggregate_csv(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> 
             writer.writerow(
                 {
                     "config": row["config"],
+                    "config_name": row["config_name"],
                     "dataset": row["dataset"],
                     "split": row["split"],
                     "tta": row["tta"],
                     "n_seeds": row["n_seeds"],
+                    "best_epoch": _fmt_optional_int(row.get("best_epoch")),
+                    "epochs_trained": _fmt_optional_int(row.get("epochs_trained")),
                     "dice_mean": f"{row['dice_mean']:.6f}",
                     "dice_std": NOT_AVAILABLE if row["dice_std"] is None else f"{row['dice_std']:.6f}",
                     "iou_mean": f"{row['iou_mean']:.6f}",
                     "iou_std": NOT_AVAILABLE if row["iou_std"] is None else f"{row['iou_std']:.6f}",
                     "mae_mean": "" if row["mae_mean"] is None else f"{row['mae_mean']:.6f}",
-                    "small_lesion_dice": f"{row['small_lesion_dice']:.6f}",
+                    "small_lesion_dice": _fmt_optional_float(row.get("small_lesion_dice")),
+                    "small_lesion_n": row["small_lesion_n"],
                     "params_m": f"{row['params_m']:.3f}",
                     "mean_epoch_time_s": (
                         "" if row["mean_epoch_time_s"] is None else f"{row['mean_epoch_time_s']:.2f}"
                     ),
+                    "peak_gpu_mem_mb": (
+                        "" if row["peak_gpu_mem_mb"] is None else f"{row['peak_gpu_mem_mb']:.1f}"
+                    ),
                 }
             )
     return out
+
+
+def _fmt_optional_int(value: Any) -> str:
+    """Format an optional int, blank when None."""
+    if value is None:
+        return ""
+    return str(int(value))
+
+
+def _fmt_optional_float(value: Any) -> str:
+    """Format an optional float, using ``n/a`` when missing or NaN."""
+    if value is None:
+        return NOT_AVAILABLE
+    try:
+        fvalue = float(value)
+    except (TypeError, ValueError):
+        return NOT_AVAILABLE
+    if math.isnan(fvalue):
+        return NOT_AVAILABLE
+    return f"{fvalue:.6f}"
 
 
 def write_aggregate_markdown(
@@ -569,23 +631,29 @@ def write_aggregate_markdown(
     lines += [
         "## Details",
         "",
-        "| Config | Dataset | Split | TTA | Seeds | MAE | Small-lesion Dice | Params (M) | Mean epoch time (s) |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|",
+        "| Config | Dataset | Split | TTA | Seeds | Best epoch | Epochs trained | MAE | Small-lesion Dice | Small-lesion n | Params (M) | Mean epoch time (s) | Peak GPU mem (MB) |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in sorted(rows, key=lambda item: (str(item["config"]), str(item["dataset"]), str(item["split"]))):
         epoch_time = "" if row["mean_epoch_time_s"] is None else f"{row['mean_epoch_time_s']:.2f}"
+        peak_mem = "" if row["peak_gpu_mem_mb"] is None else f"{row['peak_gpu_mem_mb']:.1f}"
         mae = "" if row["mae_mean"] is None else f"{row['mae_mean']:.4f}"
+        small = _fmt_optional_float(row.get("small_lesion_dice"))
         lines.append(
-            "| {config} | {dataset} | {split} | {tta} | {seeds} | {mae} | {small:.4f} | {params:.2f} | {epoch} |".format(
+            "| {config} | {dataset} | {split} | {tta} | {seeds} | {best_epoch} | {epochs_trained} | {mae} | {small} | {small_n} | {params:.2f} | {epoch} | {peak} |".format(
                 config=row["config"],
                 dataset=row["dataset"],
                 split=row["split"],
                 tta=row["tta"] or "-",
                 seeds=row["n_seeds"],
+                best_epoch=row.get("best_epoch", "") or "",
+                epochs_trained=row.get("epochs_trained", "") or "",
                 mae=mae,
-                small=row["small_lesion_dice"],
+                small=small,
+                small_n=row["small_lesion_n"],
                 params=row["params_m"],
                 epoch=epoch_time,
+                peak=peak_mem,
             )
         )
     if comparison is not None:
@@ -703,6 +771,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    configs_found = sorted({run.run_name for run in runs})
+    print(
+        f"Picked up {len(runs)} evaluated result(s) from {len(configs_found)} run folder(s): "
+        + ", ".join(configs_found),
+        flush=True,
+    )
 
     rows = summarize_runs(runs)
     comparison = None
