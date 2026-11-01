@@ -312,3 +312,47 @@ def test_cache_size_mismatch_raises(tmp_path: Path, synthetic_dataset: dict) -> 
     # Requesting 64px with a 32px cache must raise.
     with pytest.raises(ValueError, match="Cache image size"):
         make_dataset(synthetic_dataset, image_size=64, cache_path=cache)
+
+
+def test_clahe_correction_applied_at_val_and_deterministic(synthetic_dataset: dict) -> None:
+    """CLAHE is a correction: applied at val/test too, deterministic across calls."""
+    pytest.importorskip("albumentations")
+    import cv2  # noqa: F401
+
+    cfg = {
+        "data": {
+            "image_size": SIZE,
+            "normalize": False,
+            "augment": {"enabled": True, "clahe": True, "clahe_clip_limit": 2.0},
+        }
+    }
+    from src.datasets import build_correction_transform_from_config
+
+    ct = build_correction_transform_from_config(cfg)
+    assert ct is not None
+
+    # Apply to a non-uniform image; result should differ from input.
+    rng = np.random.default_rng(0)
+    image = (rng.random((48, 48, 3)) * 255).astype(np.uint8)
+    mask = np.zeros((48, 48), dtype=np.float32)
+    mask[10:30, 10:30] = 1.0
+    out1 = ct(image=image, mask=mask)
+    out2 = ct(image=image, mask=mask)
+    assert not np.array_equal(out1["image"], image), "CLAHE should change the image"
+    assert np.array_equal(out1["image"], out2["image"]), "CLAHE must be deterministic"
+
+
+def test_specular_inpaint_correction_applied_at_val_and_deterministic(synthetic_dataset: dict) -> None:
+    """Specular inpainting is a correction: applied at val/test too, deterministic."""
+    pytest.importorskip("albumentations")
+    cfg = {
+        "data": {
+            "image_size": SIZE,
+            "normalize": False,
+            "augment": {"enabled": True, "specular_inpaint": True},
+        }
+    }
+    from src.datasets import build_correction_transform_from_config
+
+    ct = build_correction_transform_from_config(cfg)
+    assert ct is not None

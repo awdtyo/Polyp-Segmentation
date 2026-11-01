@@ -78,7 +78,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data_registry import DatasetSpec, RegistryError, get_spec, resolve_data_root
-from src.datasets import PolypDataset, read_split
+from src.datasets import PolypDataset, read_split, build_correction_transform_from_config
 from src.metrics import SegMetrics, SMALL_LESION_AREA_FRACTION, summarize_by_size
 from src.models.net import build_model, count_parameters
 from src.utils import ConfigError, load_config, set_seed
@@ -465,6 +465,7 @@ def build_split_loader(cfg: Mapping[str, Any], split: str) -> DataLoader:
         split_file=split_file,
         root=data["root"],
         transform=None,
+        correction_transform=build_correction_transform_from_config(cfg),
         image_size=int(data["image_size"]),
         image_dir=data["image_dir"],
         mask_dir=data["mask_dir"],
@@ -543,6 +544,7 @@ def build_processed_loader(cfg: Mapping[str, Any], spec: DatasetSpec, data_root:
         root=processed,
         image_size=native_size,
         cache_path=npz_path,
+        correction_transform=build_correction_transform_from_config(cfg),
         normalize=cfg["data"]["normalize"],
         mean=cfg["data"]["mean"],
         std=cfg["data"]["std"],

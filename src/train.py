@@ -40,7 +40,7 @@ from PIL import Image
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
-from src.datasets import PolypDataset, build_train_transform, build_train_transform_from_config
+from src.datasets import PolypDataset, build_train_transform, build_train_transform_from_config, build_correction_transform_from_config
 from src.losses import build_loss
 from src.metrics import SegMetrics
 from src.models.fusion import resolve_fusion_modes
@@ -337,6 +337,7 @@ def build_dataloaders(
             split_file=Path(split_dir) / f"{split}.txt",
             root=root,
             transform=build_train_transform_from_config(cfg, image_size, seed=int(cfg["run"]["seed"])) if train else None,
+            correction_transform=build_correction_transform_from_config(cfg),
             image_size=image_size,
             image_dir=data["image_dir"],
             mask_dir=data["mask_dir"],

@@ -1317,3 +1317,27 @@ Open questions (current): unchanged (d5508ca is a dangling reflog commit of mode
 Left to do: run pilots on Colab (P0-P6), compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
 
 Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-01 (sixteenth session) - correction transforms and config verification
+
+### Config diffs (verified)
+- P1 vs P0: adds augment block (rotation 180 p 0.7, RandomResizedCrop 0.6-1.0 p 0.7, flips 0.5, RBC 0.1).
+- P2 vs P1: replaces RBC with ColorJitter (brightness/contrast/saturation 0.25, hue 0.03, p 0.8).
+- P3 vs P2: adds GaussNoise (p 0.2, var 5-20) + GaussianBlur (p 0.2, limit 3).
+- P4 vs P2: image_size 256->352, cache_path 256->352 only.
+- P5 vs P2: specular_inpaint true.
+- P6 vs P2: clahe true.
+- P4, P5, P6 all branch from P2 (not chained from P3). Confirmed.
+
+### Correction transforms (train+test identical)
+- Added build_correction_transform / build_correction_transform_from_config for specular inpainting and CLAHE.
+- Applied in PolypDataset.__getitem__ before augmentation, to both train and eval (correction_transform passed in train.py and evaluate.py).
+- evaluate.py passes correction_transform from run config for both split-file and processed-cache paths.
+- Tests: CLAHE changes image and is deterministic across calls; specular inpaint correction builds successfully.
+
+### P0 reproduction
+- exp003_p0_current has no augment block -> build_train_transform_from_config returns default pipeline (flips 0.5, rotate 20 p 0.5, RRC 0.85-1.0 p 0.5, RBC 0.1 p 0.5), identical to the original build_train_transform. Seed-42 result should match existing exp003 up to GPU nondeterminism.
+
+Left to do: run pilots on Colab, compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).

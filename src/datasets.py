@@ -146,6 +146,7 @@ class PolypDataset(Dataset):
         split_file: str | Path | None = None,
         root: str | Path = ".",
         transform: Transform | None = None,
+        correction_transform: Transform | None = None,
         image_size: int = 256,
         *,
         ids: Sequence[str] | None = None,
@@ -165,6 +166,7 @@ class PolypDataset(Dataset):
         self.split_file = Path(split_file) if split_file is not None else None
         self.root = Path(root)
         self.transform = transform
+        self.correction_transform = correction_transform
         self.image_size = int(image_size)
         self.image_dir = image_dir
         self.mask_dir = mask_dir
@@ -213,7 +215,7 @@ class PolypDataset(Dataset):
                 )
 
     @classmethod
-    def from_config(cls, cfg: dict[str, Any], split: str, transform: Transform | None = None) -> "PolypDataset":
+    def from_config(cls, cfg: dict[str, Any], split: str, transform: Transform | None = None, correction_transform: Transform | None = None) -> "PolypDataset":
         """Build a dataset from a resolved config.
 
         Args:
@@ -230,6 +232,7 @@ class PolypDataset(Dataset):
             split_file=Path(data["split_dir"]) / f"{split}.txt",
             root=data["root"],
             transform=transform,
+            correction_transform=correction_transform,
             image_size=data["image_size"],
             image_dir=data["image_dir"],
             mask_dir=data["mask_dir"],
@@ -275,6 +278,10 @@ class PolypDataset(Dataset):
             image = self._load_image(image_path)  # (h, w, 3) uint8
             mask = self._load_mask(mask_path)  # (h, w) float32 in {0, 1}
 
+        if self.correction_transform is not None:
+            corrected = self.correction_transform(image=image, mask=mask)
+            image = np.asarray(corrected["image"])
+            mask = np.asarray(corrected["mask"])
         if self.transform is not None:
             augmented = self.transform(image=image, mask=mask)
             image = np.asarray(augmented["image"])
@@ -531,6 +538,56 @@ def build_train_transform_from_config(cfg: dict, image_size: int, *, seed: int |
         gauss_noise_var_limit=tuple(aug.get("gauss_noise_var_limit", [5.0, 20.0])),
         gaussian_blur_p=float(aug.get("gaussian_blur_p", 0.0)),
         gaussian_blur_limit=int(aug.get("gaussian_blur_limit", 3)),
+        specular_inpaint=bool(aug.get("specular_inpaint", False)),
+        specular_threshold=float(aug.get("specular_threshold", 0.95)),
+        clahe=bool(aug.get("clahe", False)),
+        clahe_clip_limit=float(aug.get("clahe_clip_limit", 2.0)),
+    )
+
+
+def build_correction_transform(
+    *,
+    specular_inpaint: bool = False,
+    specular_threshold: float = 0.95,
+    clahe: bool = False,
+    clahe_clip_limit: float = 2.0,
+) -> Transform | None:
+    """Build the deterministic correction transform (train AND test).
+
+    Corrections (specular inpainting, CLAHE) are applied identically at train and
+    test time because they are preprocessing, not augmentation. Returns None when
+    no correction is enabled.
+
+    Args:
+        specular_inpaint: If True, apply specular-highlight detection + inpainting.
+        specular_threshold: Brightness threshold for specular detection.
+        clahe: If True, apply CLAHE on the L channel of LAB.
+        clahe_clip_limit: CLAHE clip limit.
+
+    Returns:
+        An albumentations ``Compose`` callable, or None.
+    """
+    if not (specular_inpaint or clahe):
+        return None
+    try:
+        import albumentations as A
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("albumentations is required") from exc
+
+    transforms = []
+    if specular_inpaint:
+        transforms.append(A.Lambda(name="specular_inpaint", image=_specular_inpaint, p=1.0))
+    if clahe:
+        transforms.append(A.CLAHE(clip_limit=clahe_clip_limit, p=1.0))
+    return A.Compose(transforms)
+
+
+def build_correction_transform_from_config(cfg: dict) -> Transform | None:
+    """Build a correction transform from a resolved config's ``data.augment`` block."""
+    aug = cfg.get("data", {}).get("augment", None)
+    if not aug:
+        return None
+    return build_correction_transform(
         specular_inpaint=bool(aug.get("specular_inpaint", False)),
         specular_threshold=float(aug.get("specular_threshold", 0.95)),
         clahe=bool(aug.get("clahe", False)),
