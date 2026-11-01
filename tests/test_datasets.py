@@ -239,3 +239,76 @@ def test_dataset_resizes_after_transform(synthetic_dataset: dict) -> None:
     assert sample["image"].shape == (3, SIZE, SIZE)
     assert sample["mask"].shape == (1, SIZE, SIZE)
     assert set(torch.unique(sample["mask"]).tolist()) <= {0.0, 1.0}
+
+
+def test_config_without_augment_matches_default_pipeline(synthetic_dataset: dict) -> None:
+    """A config without data.augment yields identical tensors to the old pipeline."""
+    pytest.importorskip("albumentations")
+    from src.datasets import build_train_transform_from_config
+
+    cfg = {
+        "data": {
+            "image_size": SIZE,
+            "normalize": False,
+        }
+    }
+    # No augment key -> default pipeline.
+    transform = build_train_transform_from_config(cfg, SIZE, seed=0)
+    assert transform is not None
+
+    # Same as calling build_train_transform with defaults.
+    from src.datasets import build_train_transform
+
+    default = build_train_transform(SIZE, seed=0)
+    image = np.zeros((48, 48, 3), dtype=np.uint8)
+    mask = np.zeros((48, 48), dtype=np.float32)
+    mask[10:20, 10:20] = 1.0
+    out1 = transform(image=image, mask=mask)
+    out2 = default(image=image, mask=mask)
+    assert np.array_equal(out1["image"], out2["image"])
+    assert np.array_equal(out1["mask"], out2["mask"])
+
+
+def test_augment_disabled_returns_none() -> None:
+    from src.datasets import build_train_transform_from_config
+
+    cfg = {"data": {"image_size": 32, "augment": {"enabled": False}}}
+    assert build_train_transform_from_config(cfg, 32, seed=0) is None
+
+
+def test_val_test_deterministic_unaffected_by_augment_settings(synthetic_dataset: dict) -> None:
+    """Val/test use build_eval_transform (None) regardless of augment settings."""
+    from src.datasets import build_eval_transform
+
+    assert build_eval_transform() is None
+
+
+def test_augmentation_keeps_mask_binary_and_aligned(synthetic_dataset: dict) -> None:
+    pytest.importorskip("albumentations")
+    from src.datasets import build_train_transform
+
+    transform = build_train_transform(32, seed=1, rotation_degrees=180.0, rotation_p=1.0)
+    image = np.random.randint(0, 256, (48, 48, 3), dtype=np.uint8)
+    mask = np.zeros((48, 48), dtype=np.float32)
+    mask[15:35, 15:35] = 1.0
+    out = transform(image=image, mask=mask)
+    assert out["image"].shape[2] == 3
+    assert out["mask"].shape == out["image"].shape[:2]
+    assert set(np.unique(out["mask"]).tolist()) <= {0.0, 1.0}
+
+
+def test_cache_size_mismatch_raises(tmp_path: Path, synthetic_dataset: dict) -> None:
+    """A 352 model must never silently load a 256 cache."""
+    pytest.importorskip("numpy")
+    import numpy as np
+    # Build a 256 cache.
+    cache = tmp_path / "cache_256.npz"
+    ids = np.array(synthetic_dataset["ids"], dtype=str)
+    n = len(ids)
+    images = np.zeros((n, 32, 32, 3), dtype=np.uint8)
+    masks = np.zeros((n, 32, 32), dtype=np.uint8)
+    np.savez_compressed(cache, ids=ids, images=images, masks=masks)
+
+    # Requesting 64px with a 32px cache must raise.
+    with pytest.raises(ValueError, match="Cache image size"):
+        make_dataset(synthetic_dataset, image_size=64, cache_path=cache)
