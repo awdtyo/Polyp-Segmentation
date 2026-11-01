@@ -180,3 +180,60 @@ fraction ranking is essentially identical at native and 256px resolution.
 - Kvasir-SEG splits are image level; cross-split leakage cannot be ruled out.
 - The external datasets are evaluated zero-shot and are not used for checkpoint
   selection or tuning in any way.
+
+## 8. Configurable augmentation (`data.augment`)
+
+All augmentation is train-only; val/test use deterministic resize+normalise.
+If `data.augment` is absent, the default pipeline (flips 0.5, rotate 20 deg p 0.5,
+RandomResizedCrop 0.85-1.0 p 0.5, RandomBrightnessContrast 0.1 p 0.5) is used,
+matching the original behaviour exactly (regression test in
+`tests/test_datasets.py`).
+
+Fields (all optional, defaults shown):
+
+| Field | Default | Effect |
+|---|---|---|
+| `enabled` | true | false disables all augmentation |
+| `hflip_p` | 0.5 | Horizontal flip probability |
+| `vflip_p` | 0.5 | Vertical flip probability |
+| `rotation_degrees` | 20.0 | Rotation limit (degrees) |
+| `rotation_p` | 0.5 | Rotation probability |
+| `random_resized_crop_scale` | [0.85, 1.0] | Scale range for RandomResizedCrop |
+| `random_resized_crop_p` | 0.5 | RandomResizedCrop probability |
+| `brightness_limit` | 0.1 | RandomBrightnessContrast brightness |
+| `contrast_limit` | 0.1 | RandomBrightnessContrast contrast |
+| `color_jitter_p` | 0.0 | ColorJitter probability (replaces RBC when > 0) |
+| `brightness_jitter` | 0.25 | ColorJitter brightness factor |
+| `contrast_jitter` | 0.25 | ColorJitter contrast factor |
+| `saturation_jitter` | 0.25 | ColorJitter saturation factor |
+| `hue_jitter` | 0.03 | ColorJitter hue factor |
+| `gauss_noise_p` | 0.0 | GaussNoise probability (off by default) |
+| `gauss_noise_var_limit` | [5.0, 20.0] | GaussNoise variance range |
+| `gaussian_blur_p` | 0.0 | GaussianBlur probability (off by default) |
+| `gaussian_blur_limit` | 3 | Max blur kernel size |
+| `specular_inpaint` | false | Specular highlight detection + inpainting |
+| `specular_threshold` | 0.95 | Brightness threshold for specular detection |
+| `clahe` | false | CLAHE on L channel of LAB |
+| `clahe_clip_limit` | 2.0 | CLAHE clip limit |
+
+Geometric ops (flips, rotate, crop) apply identically to image and mask via
+albumentations; masks use nearest-neighbour and padding value 0 (no false
+positives). Colour, noise, CLAHE and specular ops are image-only.
+
+Seed all random augmentation from the run seed for reproducibility.
+
+## 9. Resolution (256 vs 352)
+
+- `data.image_size` is configurable (default 256, 352 option). Must be divisible by 32.
+- `scripts/build_cache.py --size 352` rebuilds from raw images (not by upscaling
+  the 256 cache). Same for `scripts/prepare_datasets.py --size 352` on all
+  external datasets.
+- Keep 256 and 352 processed data in separate folders/filenames so both coexist.
+- Evaluation reads `image_size` from each run's own config and uses processed
+  data at that size. A 352 model that tries to load a 256 cache raises
+  `ValueError: Cache image size (256) does not match requested image_size (352)`.
+- GPU memory at 352 for dual-encoder configs: expect ~1.9x the 256 footprint
+  (area scales by 352²/256² ≈ 1.89). On a T4 (16 GB), the existing
+  `batch_size: 8` with `grad_accum_steps: 1` may need to be reduced to 4 with
+  `grad_accum_steps: 2` to keep the same effective batch size. No VRAM number
+  is claimed until measured on Colab.

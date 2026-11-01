@@ -1291,3 +1291,29 @@ Open questions (current):
 Left to do: Milestone 8 Step 7 real-number validation on Colab (exp003 on Kvasir val, then full config x dataset table). Multi-seed (42/43/44) final comparison still pending.
 
 Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-01 (fifteenth session) - configurable augmentation and pilot configs
+
+### Audit (Step 1)
+- Normalisation: ImageNet mean (0.485, 0.456, 0.406) / std (0.229, 0.224, 0.225) in `PolypDataset.__getitem__`, same train/val/test, configurable via data.mean/std/normalize.
+- Training augmentation (original): HorizontalFlip 0.5, VerticalFlip 0.5, Rotate 20 deg border_mode=0 p 0.5, RandomResizedCrop 0.85-1.0 p 0.5, RandomBrightnessContrast 0.1 p 0.5. Albumentations, seed from run seed.
+- Image size: data.image_size (default 256). Resize after augment: images bilinear, masks nearest. Cache stores 256x256 uint8.
+- Mask binarisation: >127 before resize (disk) or already 0/1 (cache); re-binarised >=0.5 after resize.
+- Resolution change to 352: rebuild cache (build_cache.py --size 352 from raw), re-prep external datasets (prepare_datasets.py --size 352), set data.image_size: 352. evaluate.py reads image_size from config and errors on cache size mismatch.
+
+### Steps 2-4 implemented
+- `build_train_transform` now accepts all parameters with defaults matching original pipeline.
+- `build_train_transform_from_config` reads data.augment block; absent = default; enabled=false = None.
+- train.py uses config-driven transform.
+- PolypDataset raises ValueError when cache image size != requested image_size.
+- Preview script: scripts/preview_augmentation.py.
+- Pilot configs: exp003_p0_current, p1_strong_geom, p2_color_jitter, p3_noise_blur, p4_352px, p5_specular (optional), p6_clahe (optional).
+- Docs: docs/datasets.md sections 8 (augmentation options) and 9 (resolution).
+- Tests: regression (config without augment = identical tensors), disabled returns None, val/test deterministic, mask binary/aligned, cache size mismatch. All pass.
+
+### Step 5: Colab notes
+- No code changes needed for 352px: build_cache.py --size 352 and prepare_datasets.py --size 352 rebuild from raw. evaluate.py reads image_size from config. Keep 256 and 352 in separate folders.
+
+Left to do: run pilots on Colab (P0-P6), compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
