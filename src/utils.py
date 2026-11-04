@@ -45,6 +45,42 @@ MSU_MODES: frozenset[str] = frozenset({"paper", "released"})
 #: Loss names accepted by :func:`src.losses.build_loss`.
 LOSS_NAMES: frozenset[str] = frozenset({"bce_dice", "dice", "jaccard", "bce"})
 
+#: Sub-keys accepted inside ``data.augment``. These mirror the parameters read
+#: by ``build_train_transform`` / ``build_train_transform_from_config`` and
+#: ``build_correction_transform_from_config`` in :mod:`src.datasets`. Any key
+#: not in this set is a typo and is rejected loudly.
+#: Note: ``color_jitter_combined_p`` is accepted by the schema and read from the
+#: config, but ``build_train_transform`` does not use it in its body (only
+#: ``color_jitter_p`` drives ColorJitter). It is kept in the schema because the
+#: pilot configs set it, but it is functionally ignored by the transform builder.
+AUGMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "enabled",
+        "hflip_p",
+        "vflip_p",
+        "rotation_degrees",
+        "rotation_p",
+        "random_resized_crop_scale",
+        "random_resized_crop_p",
+        "brightness_limit",
+        "contrast_limit",
+        "color_jitter_p",
+        "brightness_jitter",
+        "contrast_jitter",
+        "saturation_jitter",
+        "hue_jitter",
+        "color_jitter_combined_p",
+        "gauss_noise_p",
+        "gauss_noise_var_limit",
+        "gaussian_blur_p",
+        "gaussian_blur_limit",
+        "specular_inpaint",
+        "specular_threshold",
+        "clahe",
+        "clahe_clip_limit",
+    }
+)
+
 
 class ConfigError(ValueError):
     """Raised when a config file is missing keys, has unknown keys, or bad types."""
@@ -94,6 +130,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # True only for the smoke/test data. Recorded in run_info.json so a run on
         # synthetic images can never be mistaken for a real result.
         "synthetic": False,
+        # Training augmentation block, read by build_train_transform_from_config
+        # and build_correction_transform_from_config (src/datasets.py). Absent or
+        # empty means "default pipeline / no augmentation". Every present sub-key
+        # must be a known augmentation key (a typo such as "rotaton" raises a
+        # clear error).
+        "augment": {},
     },
     "train": {
         "epochs": 100,
@@ -235,6 +277,82 @@ def _apply_data_registry(cfg: dict[str, Any]) -> None:
             data[key] = value
 
 
+def _is_probability(value: Any) -> bool:
+    """True if ``value`` is a real number in the closed interval [0, 1]."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0.0 <= float(value) <= 1.0
+
+
+def _is_nonnegative_number(value: Any) -> bool:
+    """True if ``value`` is a real number >= 0."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) >= 0.0
+
+
+def _is_positive_number(value: Any) -> bool:
+    """True if ``value`` is a real number > 0."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) > 0.0
+
+
+def _is_two_number_list(value: Any) -> bool:
+    """True if ``value`` is a list/tuple of two real numbers."""
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
+    )
+
+
+def _validate_augment(data: Mapping[str, Any], problems: list[str]) -> None:
+    """Strictly validate the ``data.augment`` block.
+
+    Unknown sub-keys are rejected (a typo such as ``"rotaton"`` raises). Present
+    sub-keys are type- and range-checked where cheap to do so. The allowed keys
+    mirror the parameters read by ``build_train_transform`` /
+    ``build_train_transform_from_config`` and ``build_correction_transform_from_config``.
+
+    Args:
+        data: The resolved ``data`` config section.
+        problems: Accumulated validation error messages.
+    """
+    augment = data.get("augment")
+    if augment is None:
+        return
+    if not isinstance(augment, Mapping):
+        problems.append("data.augment must be a mapping")
+        return
+
+    unknown = sorted(set(augment) - AUGMENT_KEYS)
+    if unknown:
+        problems.append(f"unknown keys in 'data.augment': {unknown}")
+
+    def check(key: str, ok: bool, message: str) -> None:
+        if key in augment and not ok:
+            problems.append(f"data.augment.{key}: {message}")
+
+    check("enabled", isinstance(augment.get("enabled"), bool), "must be a bool")
+    check("hflip_p", _is_probability(augment.get("hflip_p")), "must be a probability in [0, 1]")
+    check("vflip_p", _is_probability(augment.get("vflip_p")), "must be a probability in [0, 1]")
+    check("rotation_degrees", _is_nonnegative_number(augment.get("rotation_degrees")), "must be a number >= 0")
+    check("rotation_p", _is_probability(augment.get("rotation_p")), "must be a probability in [0, 1]")
+    check("random_resized_crop_scale", _is_two_number_list(augment.get("random_resized_crop_scale")), "must be a list of two numbers")
+    check("random_resized_crop_p", _is_probability(augment.get("random_resized_crop_p")), "must be a probability in [0, 1]")
+    check("brightness_limit", _is_nonnegative_number(augment.get("brightness_limit")), "must be a number >= 0")
+    check("contrast_limit", _is_nonnegative_number(augment.get("contrast_limit")), "must be a number >= 0")
+    check("color_jitter_p", _is_probability(augment.get("color_jitter_p")), "must be a probability in [0, 1]")
+    check("brightness_jitter", _is_nonnegative_number(augment.get("brightness_jitter")), "must be a number >= 0")
+    check("contrast_jitter", _is_nonnegative_number(augment.get("contrast_jitter")), "must be a number >= 0")
+    check("saturation_jitter", _is_nonnegative_number(augment.get("saturation_jitter")), "must be a number >= 0")
+    check("hue_jitter", _is_nonnegative_number(augment.get("hue_jitter")), "must be a number >= 0")
+    check("color_jitter_combined_p", _is_probability(augment.get("color_jitter_combined_p")), "must be a probability in [0, 1]")
+    check("gauss_noise_p", _is_probability(augment.get("gauss_noise_p")), "must be a probability in [0, 1]")
+    check("gauss_noise_var_limit", _is_two_number_list(augment.get("gauss_noise_var_limit")), "must be a list of two numbers")
+    check("gaussian_blur_p", _is_probability(augment.get("gaussian_blur_p")), "must be a probability in [0, 1]")
+    check("gaussian_blur_limit", isinstance(augment.get("gaussian_blur_limit"), int) and not isinstance(augment.get("gaussian_blur_limit"), bool) and int(augment["gaussian_blur_limit"]) >= 0, "must be an int >= 0")
+    check("specular_inpaint", isinstance(augment.get("specular_inpaint"), bool), "must be a bool")
+    check("specular_threshold", _is_probability(augment.get("specular_threshold")), "must be a probability in [0, 1]")
+    check("clahe", isinstance(augment.get("clahe"), bool), "must be a bool")
+    check("clahe_clip_limit", _is_positive_number(augment.get("clahe_clip_limit")), "must be a number > 0")
+
+
 def validate_config(cfg: Mapping[str, Any]) -> None:
     """Check structural invariants early, so a bad run fails in a second, not an hour.
 
@@ -301,6 +419,8 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     for key in ("normalize", "pin_memory", "synthetic"):
         if not isinstance(data[key], bool):
             problems.append(f"data.{key} must be a bool")
+
+    _validate_augment(data, problems)
 
     train = cfg["train"]
     if train["loss"] not in LOSS_NAMES:

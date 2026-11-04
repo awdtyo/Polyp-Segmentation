@@ -1341,3 +1341,44 @@ Open questions (current): unchanged (d5508ca is a dangling reflog commit of mode
 Left to do: run pilots on Colab, compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
 
 Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-04 (this session) - fix: accept data.augment in the config loader
+
+Root cause: `src/utils.py:validate_config` rejects any key not in
+`DEFAULT_CONFIG["data"]`. Pilot configs (exp003_p1..p6) set `data.augment`, so
+every loader (scripts/build_cache.py, src.train, src.evaluate — all delegate to
+`src.utils.load_config`) failed with
+`"Config error: unknown keys in 'data': ['augment']"` (exit status 2).
+
+Fix (branch `fix/augment-config`, commit on bc2ef3a):
+- `src/utils.py`: added `data.augment: {}` to `DEFAULT_CONFIG["data"]` and a
+  strict `_validate_augment` validator. The allowed sub-keys mirror the
+  parameters read by `build_train_transform` / `build_train_transform_from_config`
+  and `build_correction_transform_from_config` (src/datasets.py): enabled,
+  hflip_p, vflip_p, rotation_degrees, rotation_p, random_resized_crop_scale,
+  random_resized_crop_p, brightness_limit, contrast_limit, color_jitter_p,
+  brightness_jitter, contrast_jitter, saturation_jitter, hue_jitter,
+  color_jitter_combined_p, gauss_noise_p, gauss_noise_var_limit,
+  gaussian_blur_p, gaussian_blur_limit, specular_inpaint, specular_threshold,
+  clahe, clahe_clip_limit. Unknown sub-keys (e.g. "rotaton") and out-of-range
+  values raise a clear ConfigError. Configs without an augment block are
+  unchanged (default `{}`).
+- Schema vs code: no code-read key is missing from the schema.
+  `color_jitter_combined_p` is read from the config and passed as a parameter,
+  but `build_train_transform`'s body does not use it (only `color_jitter_p`
+  drives ColorJitter) — a schema key the code functionally ignores.
+- `tests/test_config_pilots.py` (new): loads every tracked experiment config
+  through the real `load_config`; subprocess test runs
+  `scripts/build_cache.py --limit 8` on P1 (shape 256) and P4 (shape 352)
+  against synthetic data; strict sub-key/value tests; P0 regression test
+  (no-augment-block vs `augment: {}` give an identical transform).
+- `notebooks/colab_run.ipynb`: cache cell derives size/file name from CONFIG's
+  `data.image_size`, passes `--size` explicitly, prints the exact command and
+  shows stderr on failure; aggregate cell sets `PYTHONPATH` to the repo root.
+  Drive paths, RUNS_DIR, DRIVE_ZIP, RESULTS_CSV, REPO_DIR, the RESUME guard and
+  the pinned EPOCHS/SEED are unchanged; REF default set to the new commit hash.
+
+Verification:
+- Reproduced exit code 2 for P1-P6 on all three entry points on pristine
+  bc2ef3a; exit 0 after the fix.
+- Full suite: 306 passed, 0 failed (292 on pristine bc2ef3a + 14 new).
