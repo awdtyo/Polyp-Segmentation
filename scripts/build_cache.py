@@ -141,7 +141,7 @@ def _load_mask(path: Path, size: int, threshold: int) -> np.ndarray:
     if mask.ndim != 2:
         raise ValueError(f"Mask must be 2D after channel reduction, got {mask.shape}: {path}")
     binary = (mask > threshold).astype(np.uint8)
-    resized = Image.fromarray(binary * 255, mode="L").resize((size, size), resample=Image.NEAREST)
+    resized = Image.fromarray(binary * 255).resize((size, size), resample=Image.NEAREST)
     return (np.asarray(resized) > 0).astype(np.uint8)
 
 
@@ -308,7 +308,14 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     root = args.root if args.root is not None else Path(str(data["root"]))
     size = args.size if args.size is not None else int(data["image_size"])  # type: ignore[arg-type]
-    out = args.out if args.out is not None else Path(DEFAULT_OUT)
+    if args.out is not None:
+        out = args.out
+    elif args.config is not None and data.get("cache_path"):
+        # Default output carries the size from the config (e.g. kvasir_seg_352.npz)
+        # so 256 and 352 caches cannot be mixed up.
+        out = Path(str(data["cache_path"]))
+    else:
+        out = Path(DEFAULT_OUT)
 
     try:
         ids = discover_ids(

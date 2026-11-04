@@ -799,3 +799,66 @@ the bar. Not run on Colab itself.
 - Approve or reject the three speed proposals above; none is implemented.
 - Should the skipped-step scheduler advance be fixed? It changes the LR curve by
   one step out of tens of thousands.
+
+## Session 2026-11-04 (this session)
+
+### Bug fix: `data.augment` rejected by the config loader
+
+Root cause: `src/utils.py:validate_config` rejects any key not in
+`DEFAULT_CONFIG["data"]`. Pilot configs (exp003_p1..p6) set `data.augment`, so
+every loader (build_cache.py, src.train, src.evaluate — all delegate to
+`src.utils.load_config`) failed with `"Config error: unknown keys in 'data':
+['augment']"` (exit status 2). exp003_p0_current worked only because it has no
+augment block.
+
+Fix:
+- `src/utils.py`: added `data.augment: {}` to `DEFAULT_CONFIG["data"]` and a
+  strict `_validate_augment` validator. Known sub-keys (flips, rotation,
+  scale/crop, colour jitter, noise/blur, specular_inpaint, clahe, etc.) are
+  type/range-checked; unknown sub-keys (e.g. "rotaton") and out-of-range values
+  raise a clear `ConfigError`. Configs without an augment block are unchanged
+  (default `{}`).
+- `src/datasets.py`: `PolypDataset` now raises a clear `ValueError` when the
+  npz cache's spatial size differs from `data.image_size` (a 352 config never
+  silently loads a 256 cache).
+- `scripts/build_cache.py`: when `--config` is given and `--out` is not, the
+  output defaults to `data.cache_path` from the config (e.g. `kvasir_seg_352.npz`),
+  so 256 and 352 caches cannot be mixed up; `--size` still overrides
+  `data.image_size`. Removed the deprecated `mode=` argument from
+  `Image.fromarray` (cache output byte-identical).
+- `tests/test_config_pilots.py` (new): loads every pilot config and every
+  tracked config yaml through the real `load_config`; subprocess test runs
+  `build_cache.py --limit 8` on P1 (256) and P4 (352) against synthetic data
+  checking exit 0 and array shape; strict sub-key and value tests; P0
+  regression test.
+- `configs/`: added exp003_p0..p6 pilot configs (from origin/main `bc2ef3a`).
+
+Verification:
+- Reproduced exit code 2 for P1-P6 on all three entry points before the fix;
+  exit 0 after.
+- `pytest`: 243 passed, 5 failed — the 5 failures are pre-existing
+  `test_evaluate.py` failures (dual-encoder `build_model` returns None on this
+  branch, unrelated to this change).
+
+### Notebook changes (`notebooks/colab_run.ipynb`)
+- Cache cell (## 4): derives cache size and file name from CONFIG's
+  `data.image_size`, passes `--size` explicitly, defaults `--out` to the
+  config's `cache_path`; prints the exact command and shows stderr on failure
+  (`capture_output`). A 256px config behaves exactly as before.
+- Aggregate cell (## 9): sets `PYTHONPATH` to the repo root so
+  `scripts/aggregate_results.py` can import `src`.
+- Drive paths, `RUNS_DIR`, `DRIVE_ZIP`, `RESULTS_CSV`, `REPO_DIR`, training
+  logic, the `RESUME` guard and pinned `EPOCHS`/`SEED`/`REF` are unchanged.
+
+### Not done / open
+- `prepare_datasets.py --size 352`: this script does not exist on this branch
+  (it belongs to later multi-dataset work); nothing to change here.
+- Pushing: local `main` (HEAD `179aad7`) is behind `origin/main` (`bc2ef3a`)
+  by 14 commits; a plain `git push` will be rejected. The commit below is on
+  local `main`; aligning with `origin/main` requires a pull/rebase which I have
+  not performed to avoid disturbing the pre-existing uncommitted changes.
+- Pre-existing uncommitted changes to `src/evaluate.py`,
+  `src/models/fusion.py`, `tests/test_models.py` and untracked
+  `configs/exp013_hybrid_swap.yaml` were left uncommitted (unrelated to this
+  bug fix).
+- Milestone 7 (final README pass) remains pending.

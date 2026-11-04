@@ -188,6 +188,13 @@ class PolypDataset(Dataset):
                     f"{len(missing)} split ids are missing from cache {self.cache_path} "
                     f"(first: {preview}). Rebuild the cache from the same split."
                 )
+            cache_size = int(self._cache_images.shape[1])
+            if cache_size != self.image_size:
+                raise ValueError(
+                    f"Cache {self.cache_path} has spatial size {cache_size} but "
+                    f"data.image_size is {self.image_size}. Rebuild the cache with "
+                    f"--size {self.image_size} (or set data.image_size to {cache_size})."
+                )
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any], split: str, transform: Transform | None = None) -> "PolypDataset":
