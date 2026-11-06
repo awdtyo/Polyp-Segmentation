@@ -32,8 +32,14 @@ PILOT_CONFIGS = [
     "exp003_p4_352px.yaml",
     "exp003_p5_specular.yaml",
     "exp003_p6_clahe.yaml",
+    "exp006_p1_strong_geom.yaml",
+    "exp006_p2_color_jitter.yaml",
+    "exp006_p3_noise_blur.yaml",
 ]
 
+EXP006 = "exp006_all_concat.yaml"
+EXP006_PILOTS = ["exp006_p1_strong_geom.yaml", "exp006_p2_color_jitter.yaml", "exp006_p3_noise_blur.yaml"]
+EXP003_PILOTS = ["exp003_p1_strong_geom.yaml", "exp003_p2_color_jitter.yaml", "exp003_p3_noise_blur.yaml"]
 
 def _tracked_config_yamls() -> list[Path]:
     """Every tracked experiment config YAML under configs/.
@@ -79,6 +85,46 @@ def test_every_tracked_config_yaml_loads_through_the_real_loader() -> None:
     config entry point is broken."""
     for path in _tracked_config_yamls():
         load_config(path)
+
+
+@pytest.mark.parametrize("name", EXP006_PILOTS)
+def test_exp006_pilot_config_loads_through_real_loader(name: str) -> None:
+    """Each new exp006 pilot config must be accepted by load_config."""
+    cfg = load_config(CONFIGS_DIR / name)
+    assert cfg["run"]["name"] == name.replace(".yaml", "")
+    assert cfg["data"]["image_size"] == 256
+    assert cfg["data"]["augment"]["enabled"] is True
+
+
+@pytest.mark.parametrize("exp006_name,exp003_name", [
+    ("exp006_p1_strong_geom.yaml", "exp003_p1_strong_geom.yaml"),
+    ("exp006_p2_color_jitter.yaml", "exp003_p2_color_jitter.yaml"),
+    ("exp006_p3_noise_blur.yaml", "exp003_p3_noise_blur.yaml"),
+])
+def test_exp006_pilot_augment_matches_exp003(exp006_name: str, exp003_name: str) -> None:
+    """For each pN, exp006_pN's data.augment must equal exp003_pN's value for
+    value (copied verbatim)."""
+    exp006 = load_config(CONFIGS_DIR / exp006_name)
+    exp003 = load_config(CONFIGS_DIR / exp003_name)
+    assert exp006["data"]["augment"] == exp003["data"]["augment"]
+
+
+@pytest.mark.parametrize("exp006_name,exp003_name", [
+    ("exp006_p1_strong_geom.yaml", "exp003_p1_strong_geom.yaml"),
+    ("exp006_p2_color_jitter.yaml", "exp003_p2_color_jitter.yaml"),
+    ("exp006_p3_noise_blur.yaml", "exp003_p3_noise_blur.yaml"),
+])
+def test_exp006_pilot_model_decoder_match_exp006(exp006_name: str, exp003_name: str) -> None:
+    """For each pN, exp006_pN's model and decoder sections must equal the
+    exp006 config's; only run.name and data.augment may differ."""
+    exp006 = load_config(CONFIGS_DIR / EXP006)
+    pilot = load_config(CONFIGS_DIR / exp006_name)
+    assert pilot["model"] == exp006["model"]
+    assert pilot["decoder"] == exp006["decoder"]
+    assert pilot["run"]["name"] != exp006["run"]["name"]
+    assert pilot["train"] == exp006["train"]
+    assert pilot["data"]["image_size"] == exp006["data"]["image_size"]
+    assert pilot["data"]["augment"] != exp006["data"].get("augment", {})
 
 
 def test_unknown_augment_subkey_is_rejected(tmp_path: Path) -> None:

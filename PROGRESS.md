@@ -1382,3 +1382,73 @@ Verification:
 - Reproduced exit code 2 for P1-P6 on all three entry points on pristine
   bc2ef3a; exit 0 after the fix.
 - Full suite: 306 passed, 0 failed (292 on pristine bc2ef3a + 14 new).
+
+## Session 2026-11-06 (this session) - exp006 augmentation pilots
+
+Work was done in a clean git worktree at `/tmp/kilo/exp006-pilots`, created from
+`origin/fix/augment-config` (branch `feat/exp006-pilots`, HEAD `4ecd1b1`, commit
+`33f4b0e` confirmed as an ancestor of HEAD). The local checkout on this machine
+(stale main at 179aad7, commit 39ee53f, uncommitted changes in
+src/datasets.py, src/evaluate.py, src/models/fusion.py, tests/test_models.py,
+and untracked configs/exp013_hybrid_swap.yaml) was NOT touched. A fresh venv was
+created (pip installed via get-pip.py), torch CPU 2.15.0 installed from the
+PyTorch CPU index, torchvision 0.28.0+cpu installed (0.29.x raises "operator
+torchvision::nms does not exist" against torch 2.15), and the remaining
+requirements installed. Repo-local git identity set to `kilo <kilo@local>` (no
+global git config changes).
+
+### Step 0: baseline test suite
+`git log --oneline -6` in the worktree showed HEAD `4ecd1b1` on
+`fix/augment-config`, and `git merge-base --is-ancestor 33f4b0e HEAD` confirmed
+`33f4b0e` is an ancestor. `pytest -q`: **306 passed, 0 failed** on the untouched
+branch. No src/, script, existing config, loss, model, split or notebook files
+were changed anywhere.
+
+### Step 1: new exp006 pilot configs
+Found `configs/exp006_all_concat.yaml` (run.name `exp006_all_concat`,
+`model.encoder: dual`, `fusion: all_concat`, `decoder.msu: false`,
+`pretrained_a: true`, `pretrained_b: true`, batch 8, epochs 100, image_size 256).
+Created:
+- `configs/exp006_p1_strong_geom.yaml` (run.name `exp006_p1_strong_geom`)
+- `configs/exp006_p2_color_jitter.yaml` (run.name `exp006_p2_color_jitter`)
+- `configs/exp006_p3_noise_blur.yaml` (run.name `exp006_p3_noise_blur`)
+
+Each is `exp006_all_concat.yaml` exactly, plus the matching exp003 pilot's
+`data.augment` block copied value for value, with only `run.name` changed.
+
+### Step 2: parameter-level diffs
+exp006 vs each exp006_pN: only `run.name` differs in value; `data.augment` is
+newly added only in the pilot; nothing else differs. exp006_pN vs exp003_pN:
+`data.augment` is identical (no diff); the only differences are
+`run.name`, `model.encoder` (caformer vs dual), `model.fusion` (single_b vs
+all_concat) and `model.pretrained_a` (false vs true). exp006 and exp003 do NOT
+differ in batch size (both 8), epochs (both 100), learning rates
+(lr_convnext 3e-5 / lr_encoder_b 1e-4 / lr_head 3e-4, same values), or image
+size (both 256). Full flat-key diff printed for all six pairs.
+
+### Step 3: colour-jitter check
+Built the real train transform via `build_train_transform_from_config` for
+`exp006_p2_color_jitter` and `exp003_p2_color_jitter`. Both produce
+`ColorJitter(p=0.8, ...)`. Effective p = **0.8**, set by config key
+**`data.augment.color_jitter_p`**. `data.augment.color_jitter_combined_p`
+(0.8) is read from the config but NOT used by the builder (the code reads it
+and passes it as a parameter but only `color_jitter_p` drives ColorJitter's `p`
+— this is a pre-existing schema/code gap, not introduced here). Since the
+effective probability IS 0.8, no config change was made; proceeding per the
+"stop only if it is not 0.8" rule.
+
+### Step 4: tests
+Extended `tests/test_config_pilots.py`:
+- Added the three exp006 pilot files to `PILOT_CONFIGS`.
+- `test_exp006_pilot_config_loads_through_real_loader` (parametrized p1/p2/p3):
+  each new config loads via `load_config`, correct run.name, image_size 256,
+  augment enabled.
+- `test_exp006_pilot_augment_matches_exp003` (parametrized p1/p2/p3):
+  `data.augment` of exp006_pN equals exp003_pN.
+- `test_exp006_pilot_model_decoder_match_exp006` (parametrized p1/p2/p3):
+  model and decoder equal exp006's; run.name differs; train and image_size match.
+`pytest -q`: **318 passed, 0 failed** (306 baseline + 12 new). No failure exists,
+so there is nothing that also fails on the base branch.
+
+### Open questions (current): unchanged (d5508ca is a dangling reflog commit of
+model code outside this task).
