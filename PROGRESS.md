@@ -1452,3 +1452,99 @@ so there is nothing that also fails on the base branch.
 
 ### Open questions (current): unchanged (d5508ca is a dangling reflog commit of
 model code outside this task).
+
+## Session 2026-11-07 (this session) - exp009 MSU pilots (all_concat + MSU)
+
+Work was done in a clean git worktree at `/tmp/kilo/exp009-msu-pilots`, created
+from `origin/feat/exp006-pilots` (branch `feat/exp009-msu-pilots`, HEAD
+`4ea2fcb`, commit `4ea2fcb` confirmed as an ancestor of HEAD via
+`git merge-base --is-ancestor`). The stale, dirty local main on this machine
+(main at 179aad7 / 39ee53f, uncommitted changes in src/datasets.py,
+src/evaluate.py, src/models/fusion.py, tests/test_models.py, untracked
+configs/exp013_hybrid_swap.yaml, notebooks/colab_eval.ipynb,
+tests/test_colab_eval_flags.py) was NOT touched, stashed, committed or discarded.
+`git fetch origin` succeeded; `origin/feat/exp006-pilots` is present. A fresh
+venv was created (pip via get-pip.py), torch CPU installed from the PyTorch CPU
+index, torchvision 0.28.0+cpu installed (0.29.x raises "operator
+torchvision::nms does not exist" against torch 2.15), remaining requirements
+installed. Repo-local git identity set to `kilo <kilo@local>`.
+
+### Step 0: baseline test suite
+`git log --oneline -6` shows HEAD `4ea2fcb` on `feat/exp006-pilots`.
+`pytest -q`: **318 passed, 0 failed** on the untouched branch. No src/, script,
+existing config, loss, model, split or notebook files were changed anywhere.
+
+### Step 1: what "MSU on" means
+`exp005_hybrid_fusion.yaml` vs `exp007_hybrid_msu.yaml` (parameter level,
+comments ignored): only `run.name` (exp005_hybrid_fusion -> exp007_hybrid_msu)
+and `decoder.msu` (false -> true) differ in value. `lr_head` is `3.0e-4` in both
+(only its comment text changes). The source confirms `decoder.msu` gates the
+`MSU` module inside `src/models/decoder.py:PlainDecoder` (registered only when
+`msu: true`; `msu: false` keeps the exact Milestone-4 state_dict keys) and
+`src/models/msu.py:MSU` implements the two paper links D4->D2 and D3->D1
+(1x1 conv C_src->C_dst, x4 bilinear, residual add, ReLU). `decoder.msu_mode`
+(`paper` implemented, `released` raises NotImplementedError) is the only other
+decoder key that matters. No code changed.
+
+### Step 2: config number and new configs
+Confirmed exp009 is free: `git branch -r`, `git ls-tree -r --name-only <ref> -- configs/`
+for every remote branch, and `git log --all --oneline -- configs/` (max expNNN
+is exp013 on a dangling reflog commit, not on any branch) contain no exp009.
+Created:
+- `configs/exp009_concat_msu.yaml` (run.name `exp009_concat_msu`) = exp006 +
+  `decoder.msu: true`, no augment block.
+- `configs/exp009_p1_strong_geom.yaml` (run.name `exp009_p1_strong_geom`) =
+  exp009 + exp006_p1's `data.augment` block copied value for value.
+- `configs/exp009_p2_color_jitter.yaml` (run.name `exp009_p2_color_jitter`) =
+  exp009 + exp006_p2's `data.augment` block copied value for value.
+Everything else equals `configs/exp006_all_concat.yaml` exactly. `data.augment`
+stays indented under `data`. No P3/P4/P5/P6 configs created.
+
+### Step 3: parameter-level diffs
+(a) exp009_concat_msu vs exp006_all_concat: only `run.name` and `decoder.msu`
+(false -> true) differ (lr_head comment only).
+(b) exp009_p1/p2 vs exp009_concat_msu: only `run.name` and the added
+`data.augment` block differ (msu comment only).
+(c) exp009_p1 vs exp006_p1 and exp009_p2 vs exp006_p2: only `run.name` and
+`decoder.msu` (false -> true) differ (lr_head comment only).
+Flat diffs printed above; no other key differs in any pair.
+
+### Step 4: MSU wiring verification (pretrained=false, no download)
+Built via `src.models.net.build_model` and counted with
+`src.models.net.count_parameters`:
+- exp005 hybrid MSU off: 122,677,553 (122.677553 M)
+- exp007 hybrid MSU on: 122,763,569 (122.763569 M)  (+86,016 = 0.086 M)
+- exp006 all_concat MSU off: 127,777,841 (127.777841 M)
+- exp009_concat_msu all_concat MSU on: 127,863,857 (127.863857 M) (+86,016 = 0.086 M)
+The exp006->exp009 increase (86,016) matches the exp005->exp007 increase
+(86,016) exactly, i.e. the two MSU links (512x128 + 320x64 1x1 convs).
+One CPU forward pass through exp009_concat_msu on a random 1x3x256x256 tensor
+produced logits of shape **1x1x256x256** (expected). MSU is correctly wired.
+
+### Step 5: tests
+Extended `tests/test_config_pilots.py`:
+- Added EXP009 constants and `test_exp009_config_loads_through_real_loader`
+  (parametrized over exp009_concat_msu, p1, p2): each loads via `load_config`,
+  correct run.name, image_size 256.
+- `test_exp009_concat_msu_equals_exp006_except_msu_and_name`.
+- `test_exp009_pilot_equals_exp009_except_augment_and_name` (parametrized p1/p2).
+- `test_exp009_pilot_equals_exp006_pilot_except_msu_and_name` (parametrized p1/p2).
+- `test_exp009_msu_parameter_increase_matches_exp007`: builds all four models
+  with pretrained=false and asserts exp005->exp007 == exp006->exp009 == 86,016.
+`pytest`: **330 passed, 0 failed** (318 baseline + 12 new). No failure exists, so
+nothing also fails on the base branch.
+
+### Step 6: colour jitter
+`build_train_transform_from_config` on `exp009_p2_color_jitter` produces
+`ColorJitter(p=0.8)`. Effective p = **0.8**, driven by config key
+`data.augment.color_jitter_p` (0.8). `data.augment.color_jitter_combined_p`
+(0.8) is read by the schema/builder but NOT used to set ColorJitter's `p`
+(pre-existing gap, not introduced here). Confirmed.
+
+### Step 7: commit, bundle, patch
+Committed on branch `feat/exp009-msu-pilots`. A git bundle and a
+format-patch were produced outside the repo. No push performed (no push
+credentials). Push commands given to the user.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model
+code outside this task). Multi-seed (42/43/44) final comparison still pending.

@@ -41,6 +41,125 @@ EXP006 = "exp006_all_concat.yaml"
 EXP006_PILOTS = ["exp006_p1_strong_geom.yaml", "exp006_p2_color_jitter.yaml", "exp006_p3_noise_blur.yaml"]
 EXP003_PILOTS = ["exp003_p1_strong_geom.yaml", "exp003_p2_color_jitter.yaml", "exp003_p3_noise_blur.yaml"]
 
+EXP009 = "exp009_concat_msu.yaml"
+EXP009_PILOTS = ["exp009_p1_strong_geom.yaml", "exp009_p2_color_jitter.yaml"]
+
+
+def _load(name: str) -> dict:
+    return load_config(CONFIGS_DIR / name)
+
+
+def _strip_comments(raw: str) -> str:
+    """Return config lines with full-line comments and blank lines removed."""
+    kept = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _config_values_equal(a_path: Path, b_path: Path) -> tuple[bool, list[str]]:
+    """Compare two configs parameter-by-parameter (comments ignored)."""
+    import yaml
+
+    a = yaml.safe_load(_strip_comments(a_path.read_text(encoding="utf-8")))
+    b = yaml.safe_load(_strip_comments(b_path.read_text(encoding="utf-8")))
+    diffs: list[str] = []
+
+    def walk(path: str, x: dict, y: dict) -> None:
+        for key in sorted(set(x) | set(y)):
+            kpath = f"{path}.{key}" if path else key
+            if key not in x:
+                diffs.append(f"only in b: {kpath} = {y[key]!r}")
+            elif key not in y:
+                diffs.append(f"only in a: {kpath} = {x[key]!r}")
+            elif isinstance(x[key], dict) and isinstance(y[key], dict):
+                walk(kpath, x[key], y[key])
+            elif x[key] != y[key]:
+                diffs.append(f"{kpath}: a={x[key]!r} b={y[key]!r}")
+
+    walk("", a, b)
+    return (len(diffs) == 0, diffs)
+
+
+@pytest.mark.parametrize("name", EXP009_PILOTS + [EXP009])
+def test_exp009_config_loads_through_real_loader(name: str) -> None:
+    """Each new exp009 config must be accepted by load_config."""
+    cfg = _load(name)
+    assert cfg["run"]["name"] == name.replace(".yaml", "")
+    assert cfg["data"]["image_size"] == 256
+
+
+@pytest.mark.parametrize("name", EXP009_PILOTS + [EXP009])
+def test_exp009_config_is_listed_with_pilots(name: str) -> None:
+    """Sanity: the new exp009 files exist and are YAML experiment configs."""
+    assert (CONFIGS_DIR / name).is_file()
+    assert name.endswith(".yaml") and name != "datasets.yaml"
+
+
+def test_exp009_concat_msu_equals_exp006_except_msu_and_name() -> None:
+    """exp009_concat_msu must equal exp006_all_concat except run.name and
+    decoder.msu (false -> true)."""
+    ok, diffs = _config_values_equal(
+        CONFIGS_DIR / "exp006_all_concat.yaml", CONFIGS_DIR / EXP009
+    )
+    allowed = ("run.name", "decoder.msu")
+    unexpected = [d for d in diffs if not any(k in d for k in allowed)]
+    assert ok or not unexpected, f"unexpected diffs: {unexpected}"
+    assert any("run.name" in d for d in diffs), diffs
+    assert any("decoder.msu" in d for d in diffs), diffs
+
+
+@pytest.mark.parametrize("name", EXP009_PILOTS)
+def test_exp009_pilot_equals_exp009_except_augment_and_name(name: str) -> None:
+    """exp009_pN must equal exp009_concat_msu except run.name and data.augment."""
+    ok, diffs = _config_values_equal(CONFIGS_DIR / EXP009, CONFIGS_DIR / name)
+    allowed = ("run.name", "data.augment")
+    unexpected = [d for d in diffs if not any(k in d for k in allowed)]
+    assert ok or not unexpected, f"unexpected diffs: {unexpected}"
+    assert any("run.name" in d for d in diffs), diffs
+    assert any("data.augment" in d for d in diffs), diffs
+
+
+@pytest.mark.parametrize("exp009_name,exp006_name", [
+    ("exp009_p1_strong_geom.yaml", "exp006_p1_strong_geom.yaml"),
+    ("exp009_p2_color_jitter.yaml", "exp006_p2_color_jitter.yaml"),
+])
+def test_exp009_pilot_equals_exp006_pilot_except_msu_and_name(
+    exp009_name: str, exp006_name: str
+) -> None:
+    """exp009_pN must equal exp006_pN except run.name and decoder.msu
+    (false -> true)."""
+    ok, diffs = _config_values_equal(
+        CONFIGS_DIR / exp006_name, CONFIGS_DIR / exp009_name
+    )
+    allowed = ("run.name", "decoder.msu")
+    unexpected = [d for d in diffs if not any(k in d for k in allowed)]
+    assert ok or not unexpected, f"unexpected diffs: {unexpected}"
+    assert any("run.name" in d for d in diffs), diffs
+    assert any("decoder.msu" in d for d in diffs), diffs
+
+
+def test_exp009_msu_parameter_increase_matches_exp007() -> None:
+    """The parameter increase from adding MSU to all-concat (exp006 -> exp009)
+    must equal the increase for hybrid fusion (exp005 -> exp007), i.e. the two
+    MSU links (86,016 params). Builds with pretrained=false so no weights are
+    downloaded."""
+    from src.models.net import build_model, count_parameters
+
+    def total(name: str) -> int:
+        cfg = _load(name)
+        cfg["model"]["pretrained_a"] = False
+        cfg["model"]["pretrained_b"] = False
+        return count_parameters(build_model(cfg))[0]
+
+    inc_hybrid = total("exp007_hybrid_msu.yaml") - total("exp005_hybrid_fusion.yaml")
+    inc_concat = total(EXP009) - total("exp006_all_concat.yaml")
+    assert inc_hybrid == inc_concat == 86_016, (inc_hybrid, inc_concat)
+
+
 def _tracked_config_yamls() -> list[Path]:
     """Every tracked experiment config YAML under configs/.
 
