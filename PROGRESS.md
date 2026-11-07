@@ -1452,3 +1452,83 @@ so there is nothing that also fails on the base branch.
 
 ### Open questions (current): unchanged (d5508ca is a dangling reflog commit of
 model code outside this task).
+
+## Session 2026-11-07 (this session) - Colab eval notebook (Milestone 8, Step 8)
+
+Work was done in a clean git worktree at `/tmp/kilo/colab_eval_work`, created from
+`origin/feat/exp006-pilots` (branch `feat/colab-eval-notebook`, HEAD `4ea2fcb`,
+commit `33f4b0e` confirmed as an ancestor of HEAD). The local checkout on this
+machine (stale main at 179aad7, commit 39ee53f, uncommitted changes in
+src/datasets.py, src/evaluate.py, src/models/fusion.py, tests/test_models.py,
+and untracked configs/exp013_hybrid_swap.yaml) was NOT touched. A fresh venv was
+used (pip via get-pip.py; torch CPU 2.13.0 + torchvision 0.28.0+cpu from the
+PyTorch CPU index; remaining requirements installed). Repo-local git identity set
+to `kilo <kilo@local>` (no global git config changes).
+
+### What changed
+
+Added `notebooks/colab_eval.ipynb` (11 cells: 2 markdown, 9 code), the only file
+the user edits being cell 2 (config). Cells:
+
+1. Markdown: usage notes.
+2. Code: config cell (REF, REPO_URL, RUNS_DIR, RESULTS_CSV, DRIVE_DATA_ROOT,
+   DRIVE_ZIP, ONLY_RUNS (required), DATASETS, EVAL_SPLIT, TTA_FLIP, FORCE,
+   SANITY_CHECK, REPO_DIR, LOCAL_DATA_ROOT).
+3-4. Code: mount Drive, clone/fetch the repo at REF, `git reset --hard` +
+   `git clean -fdq`, checkout, reset remote URL to drop the token, verify clean,
+   print HEAD hash.
+5. Code: install missing Python packages (never torch).
+6. Markdown: data staging description.
+7. Code: discover runs in ONLY_RUNS (stop with a clear message if empty or a
+   name is missing), read each run's image_size, stage Kvasir from DRIVE_ZIP
+   with `scripts/build_cache.py` at each required size (array-identical to the
+   training cache), copy external datasets from DRIVE_DATA_ROOT/processed when
+   valid (meta.json image_size + registry expected_count) else prepare with
+   `scripts/prepare_datasets.py`. One size-specific data root per distinct size.
+8. Markdown: evaluate description.
+9. Code: write per-run session configs (data.data_root, data.split_dir,
+   data.cache_path repointed at local staged data); timestamped backup of
+   results.csv before the first write; SANITY_CHECK evaluates each run on Kvasir
+   val and compares with run_info.json best_val_dice (PASS if diff <= 0.003,
+   WARNING otherwise); then `python -m src.evaluate` over DATASETS for each run
+   with subprocess.run(capture_output=True), printing command, stdout, stderr and
+   exit code. `--tta-flip` passed only when TTA_FLIP.
+10. Markdown: aggregate description.
+11. Code: `scripts/aggregate_results.py` with PYTHONPATH=repo root and --split
+    (--tta flip only when on); print aggregate markdown; then per-run tables
+    (Dice, IoU, small-lesion Dice, small-lesion n) built directly from
+    results.csv (rows = run, columns = dataset).
+
+Added `tests/test_colab_eval_flags.py`: extracts `--flag` tokens from the
+notebook's code cells and checks each against the real argparse parsers of
+`src.evaluate`, `scripts/prepare_datasets.py`, `scripts/build_cache.py` and
+`scripts/aggregate_results.py`.
+
+### Test results
+
+`pytest -q`: **328 passed, 0 failed** (306 baseline + 22 new). No failure exists,
+so there is nothing that also fails on the base branch (`4ea2fcb`).
+
+### What the notebook assumes (must check on first Colab run)
+
+- Drive layout: `DRIVE_DATA_ROOT/raw/<dataset>/` and optional
+  `DRIVE_DATA_ROOT/processed/<dataset>/` (folder names from
+  `configs/datasets.yaml`); `DRIVE_ZIP` is the Kvasir-SEG zip used by training.
+- `ONLY_RUNS` must name existing run folders under `RUNS_DIR` that contain
+  `best.pt` and `config_resolved.yaml`.
+- `DATASETS` defaults to `["kvasir_seg", "cvc_clinicdb", "cvc_colondb"]`;
+  `"etis"` and `"cvc_300"` only when added to the Drive raw tree.
+- `REF` must be a commit/tag/branch on the remote (default `4ea2fcb`, the
+  base commit containing the data.augment fix).
+- `GH_TOKEN` must be in Colab Secrets for the private repo clone.
+- All paths in cell 2 are the only ones the user edits; everything else is
+  driven by them.
+
+### What could not be verified without Colab
+
+- Drive mount, `GH_TOKEN` secret, private repo clone, and the exact
+  `DRIVE_DATA_ROOT` / `DRIVE_ZIP` paths.
+- GPU execution of `src.evaluate` (T4) and actual end-to-end timing/memory.
+- Whether `DRIVE_DATA_ROOT/processed/<dataset>/` matches the registry's
+  `expected_count` for cvc_clinicdb (612), cvc_colondb (380).
+- The Kvasir zip's internal layout (images/ + masks/ folder discovery).
