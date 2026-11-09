@@ -1548,3 +1548,90 @@ credentials). Push commands given to the user.
 
 Open questions (current): unchanged (d5508ca is a dangling reflog commit of model
 code outside this task). Multi-seed (42/43/44) final comparison still pending.
+
+## Session 2026-11-10 (this session) - Prediction visualization script and model documentation
+
+Work was done in a clean git worktree at `/home/aditya/polyp-worktree`, created
+from `origin/feat/exp009-msu-pilots` (branch `feat/prediction-figures`, HEAD
+`9cc9886`, commit `9cc9886` confirmed as an ancestor of HEAD via
+`git merge-base --is-ancestor`). The stale, dirty local main on this machine
+(main at 179aad7 / 39ee53f, uncommitted changes in various files, untracked
+configs/exp013_hybrid_swap.yaml) was NOT touched, stashed, committed or discarded.
+`git fetch origin` succeeded; `origin/feat/exp009-msu-pilots` is present. A fresh
+venv was created (pip via get-pip.py), torch CPU installed from the PyTorch CPU
+index, torchvision 0.29.2+cpu installed (compatible with torch 2.15), remaining
+requirements installed. Repo-local git identity set to `kilo <kilo@local>`.
+
+### Task A: Document the model exactly (docs/model.md)
+Created `docs/model.md` with complete architecture documentation for `exp006_all_concat`:
+- Encoders: ConvNeXt-Base (`convnext_base.fb_in1k`, 87.56M params) + CAFormer-S18
+  (`caformer_s18.sail_in1k`, 23.24M params), both `features_only=True`,
+  `out_indices=(0,1,2,3)`, strides [4,8,16,32].
+- Channel alignment: 1×1 conv + BN per stage, mapping to fused widths [64,128,320,512].
+- Fusion `all_concat`: ConcatFusion at all 4 stages (concat on channels, 3×3 conv + BN + ReLU
+  back to C_i). Fusion params: 6.93M total (S1: 0.074M, S2: 0.295M, S3: 1.84M, S4: 4.72M).
+- Decoder (MSU off): U-Net with ConvTranspose2d 2× upsampling, concat skips,
+  ConvBlock (2× 3×3 conv+BN+ReLU), head: 4× upsample + 1×1 conv to 1 channel (logits).
+- Parameter counts verified: Encoder A 87.56M, Encoder B 23.24M, Align A 0.73M,
+  Align B 0.39M, Fusion 6.93M, Decoder+Head 8.93M, Total 127.78M (matches expected).
+
+### Task B: Sample prediction figures (scripts/visualize_predictions.py)
+Created `scripts/visualize_predictions.py` with the following features:
+- Inputs: `--run_dir` (repeatable for side-by-side comparison), `--datasets`
+  (default kvasir_seg cvc_clinicdb cvc_colondb; refuses etis/cvc_300 without
+  `--allow_heldout`), `--out_dir`, `--n_random` (default 4), `--n_failures`
+  (default 2), `--seed` (default 42), `--split` (test/val), `--checkpoint`
+  (best/last), `--bw` (black-and-white paper mode), `--dpi` (default 300),
+  `--no_cuda` (force CPU).
+- Reuses repo's model builder, config loader, checkpoint loading, preprocessing
+  and threshold (THRESHOLD=0.5 from src.evaluate) exactly.
+- Loads `best.pt` and `config_resolved.yaml` from run directory.
+- Selection: random examples from fixed seed, failure examples from lowest
+  per-image Dice in `<run_dir>/per_image_test_<dataset>.csv`.
+- Layout per dataset: one row per example; columns: input image, GT mask,
+  predicted mask(s), overlay(s) with GT contour (green) and pred contour (red),
+  per-image Dice label. Side-by-side runs add prediction columns per run.
+- Outputs: PNG (300 dpi) and PDF per dataset, combined figure, selection CSV
+  listing image IDs, Dice per run, and selection reason (random/failure).
+- Consistency check: recomputes Dice from predictions and compares with
+  per-image CSV; prints PASS or WARNING if any differ by >1e-3.
+- B&W mode: grayscale masks, black contours with solid (GT) vs dashed (pred) lines.
+- Runs on CPU (for tests) or GPU when available.
+
+Created `tests/test_visualize_predictions.py` with three synthetic-data smoke tests:
+- `test_visualize_predictions_smoke`: end-to-end run on tiny model (convnext_tiny,
+  64×64), produces figures, PDFs, CSVs.
+- `test_visualize_predictions_consistency_check`: verifies consistency check passes.
+- `test_visualize_predictions_multi_run`: side-by-side comparison of two runs.
+All tests pass on CPU with `pretrained=false`, no downloads.
+
+### Task C: Colab cell (docs/colab_visualization_cell.md)
+Wrote exact Colab cell(s) to paste into `colab_eval.ipynb` for running the
+visualization script on `exp006_all_concat_30ep`, saving figures to
+`RUNS_DIR/../figures` (i.e., `/content/drive/MyDrive/polyp/figures`), with
+stderr visible on failure. Includes optional variants for multi-run comparison
+and B&W paper mode.
+
+### Tests
+- Full test suite: **268 passed** (previously 265; +3 new visualization tests).
+- All strict-key config tests pass.
+- No existing test failures; nothing fails on the base commit.
+
+### Deliverables
+Branch `feat/prediction-figures` with:
+- `docs/model.md`
+- `scripts/visualize_predictions.py`
+- `tests/test_visualize_predictions.py`
+- `docs/colab_visualization_cell.md`
+- Updated `PROGRESS.md`
+
+Git identity: `kilo <kilo@local>` (repo-local).
+
+### Open questions / Items not verified without Colab
+- Actual VRAM usage of exp006 on T4 (16 GB) at batch size 8, image size 256.
+- Real training/validation Dice and IoU on Kvasir-SEG for exp006.
+- Zero-shot performance on CVC-ClinicDB and CVC-ColonDB for exp006.
+- Whether the pinned `convnext_base.fb_in1k` and `caformer_s18.sail_in1k`
+  pretrained weights load without mismatch on Colab (timm version compatibility).
+- Exact epoch time and peak GPU memory as recorded in `run_info.json` for real runs.
+- Visual quality of generated figures (contour rendering, layout) on real data.
