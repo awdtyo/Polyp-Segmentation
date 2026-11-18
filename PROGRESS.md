@@ -1635,3 +1635,90 @@ Git identity: `kilo <kilo@local>` (repo-local).
   pretrained weights load without mismatch on Colab (timm version compatibility).
 - Exact epoch time and peak GPU memory as recorded in `run_info.json` for real runs.
 - Visual quality of generated figures (contour rendering, layout) on real data.
+
+## Session 2026-11-18 (this session) - Merged dataset training preparation for exp006
+
+Work was done in a clean git worktree at `/tmp/polyp-merged-training`, created
+from `origin/feat/prediction-figures` (branch `feat/merged-training`, HEAD
+`065cba2`, commit `065cba2` confirmed as an ancestor of
+`origin/feat/prediction-figures` via `git merge-base --is-ancestor`). The stale,
+dirty local main on this machine (main at 179aad7 / 39ee53f, uncommitted changes
+in various files, untracked configs/exp013_hybrid_swap.yaml) was NOT touched,
+stashed, committed or discarded. A fresh venv was not needed as the system
+Python 3.12 with installed packages was used. Repo-local git identity set to
+`kilo <kilo@local>`.
+
+### Task 1: Dataset verification script for merged Kvasir-SEG + CVC-ClinicDB layout
+Created `scripts/verify_merged_dataset.py` that verifies the merged dataset
+prepared on the new Google Drive (MyDrive/polyp-seg-data) with the following
+checks:
+- Total 1,450 images; counts per split (870 train / 290 val / 290 test)
+- Counts per source (Kvasir-SEG 900, CVC-ClinicDB 550) identified by
+  `KvasirSEG__` / `CVCClinicDB__` prefix
+- No ID appears in two splits (cross-split uniqueness)
+- Every image has a mask with the same stem
+- Masks are binary (0/255 or 0/1); no empty masks in sampled check
+- Compares with `preparation_report.json` and reports any mismatch
+- Prints per-split source composition and notes the split protocol
+  (random per image, not by sequence; ClinicDB near-duplicates may leak)
+- Optionally writes `train.txt`, `val.txt`, `test.txt` from the CSVs so the
+  existing `PolypDataset`, `build_cache.py` and session-config overrides work
+  with no code change
+
+Created `tests/test_verify_merged_dataset.py` (10 tests) covering:
+- Valid synthetic merged layout passes verification and writes split files
+- Fails on missing mask, duplicate ID across splits
+- Notebook JSON validity and code cell compilation
+- Config loads through real loader and diffs only in expected keys
+  (run.name, epochs, data location keys)
+- CLI flag compatibility for train/evaluate/aggregate against actual argparse
+
+### Task 2: Config for merged training
+Created `configs/exp006_merged_all_concat.yaml`: exactly
+`configs/exp006_all_concat.yaml` (dual encoder, all_concat fusion, MSU off,
+pretrained encoders, batch 8, image_size 256, default augmentation, no
+`data.augment` block) with only these differences:
+- `run.name: exp006_merged_all_concat`
+- `train.epochs: 30` (stated explicitly)
+- Data location placeholders: `data.root: data/merged_raw`,
+  `data.split_dir: data/merged_splits`, `data.image_ext: .png`,
+  `data.mask_ext: .png`, `data.cache_path: data/cache/merged_256.npz`,
+  `data.split_ratios: [0.6, 0.2, 0.2]`
+Parameter-level diff confirms only these keys differ.
+
+### Task 3: Colab launcher for merged training
+Created `notebooks/colab_run_merged.ipynb` (20 cells, lean launcher ~6 code
+cells) in the style of the existing `notebooks/colab_run.ipynb`:
+- One config cell with `CONFIG`, `SEED`, `REF`, `EPOCHS=30`, `BATCH_SIZE`,
+  `GRAD_ACCUM`, `RESUME`, `DATA_DRIVE`, `RUNS_DIR`
+- Mounts new Drive, clones repo at `REF` with `GH_TOKEN` from Colab Secrets
+- Verifies merged dataset layout (fails fast on mismatch), copies train/val/test
+  images/masks to flat `/content/merged_raw` (names unique via prefix), writes
+  split `.txt` files from CSVs
+- Builds 256px npz cache with `scripts/build_cache.py`
+- Runs test suite, then `src.train` with session config pointing at local data
+  and Drive run folder
+- Streams live tqdm epoch bar, prints exit code, refuses to start if `last.pt`
+  exists unless `RESUME=True`
+- Evaluates held-out test split (290 images) once, appends row to `results.csv`
+  on Drive
+- Aggregates seeds into mean/std table
+- First-run checklist documents assumptions, Colab checks, and unverifiable items
+
+### Tests
+- Full test suite: **343 passed** (previously 333; +10 new verification tests).
+- All new tests pass on CPU with synthetic data; no pretrained weights downloaded.
+- Smoke run of `exp006_merged_all_concat` (via `--smoke`) passes:
+  `model: dual (convnext_tiny.fb_in1k + caformer_s18.sail_in1k) params: 67.85M`
+  synthetic val Dice `0.0000` (pipeline check, not a result).
+
+### Open questions / Items not verified without Colab
+- Actual T4 VRAM usage for the dual-encoder model at 256x256 with batch 8.
+- Whether the merged dataset cache builds without error on the Colab filesystem
+  (the verification script logic is tested locally on synthetic data only).
+- Real training/validation Dice and IoU on the merged splits for exp006.
+- Exact epoch time and peak GPU memory as recorded in `run_info.json` for real runs.
+- Whether the pinned `convnext_base.fb_in1k` and `caformer_s18.sail_in1k`
+  pretrained weights load without mismatch on Colab (timm version compatibility).
+- The exact test Dice/IoU numbers on the merged test split (290 images).
+- Multi-seed (42/43/44) final comparison still pending for this protocol.

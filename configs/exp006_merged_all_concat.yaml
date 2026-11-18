@@ -1,0 +1,70 @@
+# exp006_merged - exp006 (dual encoder, all_concat fusion, MSU off) trained from
+# scratch on the merged Kvasir-SEG (900) + CVC-ClinicDB (550) dataset.
+# Same model, decoder, loss, learning rates, batch size 8, image_size 256,
+# default augmentation (no data.augment block) as exp006_all_concat.yaml.
+# Only run.name, epochs and data location keys differ.
+
+run:
+  name: exp006_merged_all_concat
+  seed: 42
+  out_dir: runs
+
+data:
+  # These will be overridden by the Colab session config to point at the
+  # local copy of the merged data and the 256px cache built from it.
+  # The defaults here are placeholders so the config validates standalone.
+  root: data/merged_raw
+  image_dir: images
+  mask_dir: masks
+  split_dir: data/merged_splits
+  image_ext: .png
+  mask_ext: .png
+  mask_suffix: ""
+  cache_path: data/cache/merged_256.npz
+  image_size: 256
+  split_ratios: [0.6, 0.2, 0.2]
+  split_seed: 42
+  mask_threshold: 127
+  normalize: true
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  num_workers: 2
+  pin_memory: true
+
+train:
+  epochs: 30
+  batch_size: 8
+  loss: bce_dice
+  bce_weight: 1.0
+  dice_weight: 1.0
+  lr_convnext: 3.0e-5     # Branch A
+  lr_encoder_b: 1.0e-4    # pretrained Branch B
+  lr_head: 3.0e-4         # alignment + fusion + decoder + head
+  weight_decay: 1.0e-4
+  warmup_epochs: 0
+  grad_accum_steps: 1
+  grad_clip_norm: 0.0
+  amp: true
+  channels_last: false
+
+model:
+  encoder: dual
+  encoder_a: convnext_base.fb_in1k
+  encoder_b: caformer_s18.sail_in1k
+  pretrained_a: true
+  pretrained_b: true
+  channels: [64, 128, 320, 512]
+  fusion: all_concat      # [concat, concat, concat, concat]
+  fusion_heads: 8
+  pos_enc_2d: false
+  skip_convformer: false
+
+decoder:
+  msu: false
+  msu_mode: paper
+
+logging:
+  wandb: false
+  wandb_project: polyp-dual-encoder
+  log_images_every: 5
+  num_log_images: 4
