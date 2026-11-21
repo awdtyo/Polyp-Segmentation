@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph EncA["Branch A: ConvNeXt-Base\nconvnext_base.fb_in1k\n87.56M params"]
+        InputA["Input (B, 3, 256, 256)"]
+        Stem["Stem: 4×4 Conv, Stride 4\n→ (B, 128, 64, 64)"]
+        S1["Stage 1: 3× ConvNeXt Block\n(B, 128, 64, 64)\nStride 4"]
+        S2["Stage 2: 3× ConvNeXt Block\n(B, 256, 32, 32)\nStride 8"]
+        S3["Stage 3: 27× ConvNeXt Block\n(B, 512, 16, 16)\nStride 16"]
+        S4["Stage 4: 3× ConvNeXt Block\n(B, 1024, 8, 8)\nStride 32"]
+    end
+    
+    subgraph EncB["Branch B: CAFormer-S18\ncaformer_s18.sail_in1k\n23.24M params"]
+        InputB["Input (B, 3, 256, 256)"]
+        StemB["Stem: 3×3 Conv, Stride 4\n→ (B, 64, 64, 64)"]
+        S1B["Stage 1: 3× ConvFormer Block\n(B, 64, 64, 64)\nStride 4\nSeparable Conv Token Mixer"]
+        S2B["Stage 2: 3× ConvFormer Block\n(B, 128, 32, 32)\nStride 8\nSeparable Conv Token Mixer"]
+        S3B["Stage 3: 9× Transformer Block\n(B, 320, 16, 16)\nStride 16\nSelf-Attention Token Mixer"]
+        S4B["Stage 4: 3× Transformer Block\n(B, 512, 8, 8)\nStride 32\nSelf-Attention Token Mixer"]
+    end
+    
+    InputA --> Stem --> S1 --> S2 --> S3 --> S4
+    InputB --> StemB --> S1B --> S2B --> S3B --> S4B
+    
+    style EncA fill:#e1f5fe,stroke:#01579b
+    style EncB fill:#f3e5f5,stroke:#4a148c

@@ -1,0 +1,47 @@
+flowchart TB
+    subgraph Fusion["All-Concat Fusion (Per Stage)"]
+        direction TB
+        
+        subgraph Stage1["Stage 1: Stride 4, 64×64"]
+            A1["ConvNeXt Aligned\n(B, 64, 64, 64)"]
+            B1["CAFormer Aligned\n(B, 64, 64, 64)"]
+            Cat1["Concat: (B, 128, 64, 64)"]
+            Proj1["3×3 Conv + BN + ReLU\n128 → 64"]
+            Out1["Fused F1\n(B, 64, 64, 64)"]
+        end
+        
+        subgraph Stage2["Stage 2: Stride 8, 32×32"]
+            A2["ConvNeXt Aligned\n(B, 128, 32, 32)"]
+            B2["CAFormer Aligned\n(B, 128, 32, 32)"]
+            Cat2["Concat: (B, 256, 32, 32)"]
+            Proj2["3×3 Conv + BN + ReLU\n256 → 128"]
+            Out2["Fused F2\n(B, 128, 32, 32)"]
+        end
+        
+        subgraph Stage3["Stage 3: Stride 16, 16×16"]
+            A3["ConvNeXt Aligned\n(B, 320, 16, 16)"]
+            B3["CAFormer Aligned\n(B, 320, 16, 16)"]
+            Cat3["Concat: (B, 640, 16, 16)"]
+            Proj3["3×3 Conv + BN + ReLU\n640 → 320"]
+            Out3["Fused F3\n(B, 320, 16, 16)"]
+        end
+        
+        subgraph Stage4["Stage 4: Stride 32, 8×8"]
+            A4["ConvNeXt Aligned\n(B, 512, 8, 8)"]
+            B4["CAFormer Aligned\n(B, 512, 8, 8)"]
+            Cat4["Concat: (B, 1024, 8, 8)"]
+            Proj4["3×3 Conv + BN + ReLU\n1024 → 512"]
+            Out4["Fused F4\n(B, 512, 8, 8)"]
+        end
+    end
+    
+    A1 & B1 --> Cat1 --> Proj1 --> Out1
+    A2 & B2 --> Cat2 --> Proj2 --> Out2
+    A3 & B3 --> Cat3 --> Proj3 --> Out3
+    A4 & B4 --> Cat4 --> Proj4 --> Out4
+    
+    style A1 fill:#e1f5fe,stroke:#01579b
+    style B1 fill:#f3e5f5,stroke:#4a148c
+    style Cat1 fill:#fff3e0,stroke:#e65100
+    style Proj1 fill:#e8f5e9,stroke:#1b5e20
+    style Out1 fill:#fce4ec,stroke:#880e4f

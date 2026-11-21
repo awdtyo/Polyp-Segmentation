@@ -1,0 +1,34 @@
+flowchart LR
+    Input["Input\n(B, 3, 256, 256)"]
+    Preproc["Preprocessing\n• Resize 256×256\n• Normalize ImageNet\n• Mask >127 before resize"]
+    
+    subgraph Enc["Dual Encoders"]
+        ENC_A["ConvNeXt-Base\n4 stages"]
+        ENC_B["CAFormer-S18\n4 stages"]
+    end
+    
+    subgraph Align["Channel Alignment\n1×1 Conv + BN"]
+        AL_A["4× ChannelAlignment"]
+        AL_B["4× ChannelAlignment"]
+    end
+    
+    subgraph Fusion["All-Concat Fusion\nConcat + 3×3 Conv + BN + ReLU"]
+        FUS["4 stages"]
+    end
+    
+    subgraph Dec["Decoder"]
+        DEC["U-Net Decoder\n4 stages + Head"]
+    end
+    
+    Output["Logits (B, 1, 256, 256)\n→ Sigmoid → Mask"]
+    
+    Input --> Preproc --> Enc
+    Enc --> Align
+    Align --> Fusion
+    Fusion --> Dec
+    Dec --> Output
+    
+    style Enc fill:#e1f5fe,stroke:#01579b
+    style Align fill:#fff3e0,stroke:#e65100
+    style Fusion fill:#e8f5e9,stroke:#1b5e20
+    style Dec fill:#fce4ec,stroke:#880e4f

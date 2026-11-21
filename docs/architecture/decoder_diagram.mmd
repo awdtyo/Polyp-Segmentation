@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph Decoder["PlainDecoder: U-Net with Transposed Conv Upsampling"]
+        direction TB
+        
+        F4["F4: (B, 512, 8, 8)"]
+        F3["F3: (B, 320, 16, 16)"]
+        F2["F2: (B, 128, 32, 32)"]
+        F1["F1: (B, 64, 64, 64)"]
+        
+        D4["Decoder 4\nConvBlock(512→512)\n→ D4: (B, 512, 8, 8)"]
+        
+        UP43["Up 4→3\nConvTranspose2d(512→320)\nkernel=2, stride=2\n→ (B, 320, 16, 16)"]
+        Cat3["Concat: D4↑ + F3\n→ (B, 640, 16, 16)"]
+        D3["Decoder 3\nConvBlock(640→320)\n→ D3: (B, 320, 16, 16)"]
+        
+        UP32["Up 3→2\nConvTranspose2d(320→128)\nkernel=2, stride=2\n→ (B, 128, 32, 32)"]
+        Cat2["Concat: D3↑ + F2\n→ (B, 256, 32, 32)"]
+        D2["Decoder 2\nConvBlock(256→128)\n→ D2: (B, 128, 32, 32)"]
+        
+        UP21["Up 2→1\nConvTranspose2d(128→64)\nkernel=2, stride=2\n→ (B, 64, 64, 64)"]
+        Cat1["Concat: D2↑ + F1\n→ (B, 128, 64, 64)"]
+        D1["Decoder 1\nConvBlock(128→64)\n→ D1: (B, 64, 64, 64)"]
+        
+        Head["Head\nConvTranspose2d(64→32)×4\nBN + ReLU\n1×1 Conv → 1 channel\n→ Logits: (B, 1, 256, 256)"]
+    end
+    
+    F4 --> D4
+    D4 --> UP43
+    UP43 & F3 --> Cat3 --> D3
+    D3 --> UP32
+    UP32 & F2 --> Cat2 --> D2
+    D2 --> UP21
+    UP21 & F1 --> Cat1 --> D1
+    D1 --> Head
+    
+    style F4 fill:#fce4ec,stroke:#880e4f
+    style D4 fill:#e8f5e9,stroke:#1b5e20
+    style UP43 fill:#fff3e0,stroke:#e65100
+    style Cat3 fill:#fff3e0,stroke:#e65100
+    style D3 fill:#e8f5e9,stroke:#1b5e20
+    style Head fill:#f3e5f5,stroke:#4a148c
