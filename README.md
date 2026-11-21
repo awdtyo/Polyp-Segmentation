@@ -1,5 +1,11 @@
 # EXP006: Dual-Encoder Polyp Segmentation with All-Concat Fusion
 
+<p align="center">
+  <img src="assets/banner.png"
+       alt="Colorectal Polyp Segmentation"
+       width="100%">
+</p>
+
 **Polyp Segmentation using ConvNeXt-Base + CAFormer-S18 with All-Concatenation Fusion**
 
 ---
