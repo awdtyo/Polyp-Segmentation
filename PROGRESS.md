@@ -4,7 +4,7 @@ Living status file. AGENTS.md is the specification; this file records what is
 actually done, what is in flight, and what is blocked. Update it at the end of
 every session.
 
-Last updated: 2026-10-31.
+Last updated: 2026-11-01.
 
 ## Milestone checklist
 
@@ -29,6 +29,18 @@ Last updated: 2026-10-31.
       on Colab. **Partial**: launcher (streaming output, `REF`, `RUN_SUFFIX`,
       `GRAD_ACCUM`) and the README section are in place; the final README pass
       is still to do.
+- [ ] 8. Multi-dataset evaluation (user-specified, outside AGENTS.md section 9):
+      zero-shot evaluation of the Kvasir-trained checkpoints on Kvasir-SEG test
+      plus CVC-ClinicDB, CVC-ColonDB, ETIS and CVC-300. **In progress**: Steps 0
+      (dataset registry + `DATA_ROOT` resolution), 1 (eval/prep report), 2
+      (`scripts/prepare_datasets.py`, run on the real data), 3 (multi-dataset
+      `src/evaluate.py`), 4 (config x dataset aggregation), 5 (test suite for
+      the multi-dataset path), 6 (`notebooks/colab_eval.ipynb`) and the Step 7
+      docs (`docs/datasets.md`, the README evaluation-protocol pass) are done.
+      Step 7's real-number validation (exp003 Kvasir val first, then the full
+      exp003/exp005/exp006/exp007 x dataset table) needs the Colab checkpoints
+      and remains. Everything here is single-seed and provisional, not a final
+      result.
 
 ## Decisions in force
 
@@ -800,65 +812,573 @@ the bar. Not run on Colab itself.
 - Should the skipped-step scheduler advance be fixed? It changes the LR curve by
   one step out of tens of thousands.
 
-## Session 2026-11-04 (this session)
+## Session 2026-10-31 (eleventh session) - Milestone 8, Step 0
 
-### Bug fix: `data.augment` rejected by the config loader
+Milestone 8 (multi-dataset evaluation) is user-specified work outside AGENTS.md
+section 9. Rules for it: do not change training code, model code or the Kvasir
+800/100/100 split; never select checkpoints or tune on the external datasets
+(selection stays Kvasir val Dice); all numbers are single-seed and provisional.
+
+### Step 0: dataset registry and `DATA_ROOT` resolution (done)
+
+What the raw data actually is (inspected, not assumed). `<repo>/data/raw` is a
+symlink to `../../../dataset/Kvasir-SEG/Kvasir-SEG`, and under it sit one folder
+per dataset:
+
+| dataset | folder | layout | pairs | expected |
+|---|---|---|---|---|
+| Kvasir-SEG | `data/raw/kvasir_seg` | `images/*.jpg`, `masks/*.jpg` | 1000/1000 | 1000 |
+| CVC-ClinicDB | `data/raw/cvc_clinicdb` | `images/*.png`, `masks/*.png` | 612/612 | 612 |
+| CVC-ColonDB | `data/raw/cvc_colondb` | `images/*.png`, `masks/*.png` | 380/380 | 380 |
+| ETIS-LaribPolypDB | `data/raw/etis` | absent | - | 196 |
+| CVC-300 | `data/raw/cvc_300` | absent | - | 60 |
+
+No count mismatch for the three present datasets. Masks share the image stem
+with no `_mask` suffix; external images are `.png` while Kvasir is `.jpg`/`.jpg`,
+so pairing is by stem with the extension discovered from disk.
+
+Changes:
+
+- `configs/datasets.yaml` (new): the registry. Five entries with name, folder,
+  expected count, `image_subdir`/`mask_subdir`/`mask_suffix`, plus the
+  `DATA_ROOT` resolution and stem-matching rules in a header comment.
+- `src/data_registry.py` (new): `DatasetSpec` (`raw_dir`, `processed_dir`,
+  `image_dir`, `mask_dir`, `is_present`), `load_registry`, `registry_names`,
+  `get_spec`, `resolve_data_root` (env `DATA_ROOT` > `data.data_root` >
+  `<repo>/data`), `data_root_from_config`, `present_datasets`, `RegistryError`.
+  A missing dataset is reported as absent, never as an error.
+- `src/utils.py`: `data.dataset` and `data.data_root` defaults; `load_config`
+  now calls `_apply_data_registry`, which sets `data.root` to the registry raw
+  folder and fills `image_dir`/`mask_dir`/`mask_suffix` from the registry entry.
+  A layout key is rewritten only while it still holds its default, so an
+  explicit root (synthetic smoke data, a Colab config) is never touched. This
+  keeps `src/train.py` unchanged. `validate_config` gained the two new keys.
+  Side effect: `run_info.json`'s `data_root` now records the resolved absolute
+  raw folder instead of the literal `data/raw`; the provenance test was updated
+  to match.
+- `tests/test_data_registry.py` (new, 16 tests) and 4 new tests in
+  `tests/test_utils.py`; `tests/test_train.py` provenance assertion updated.
+
+Verification: `.venv/bin/python -m pytest -o addopts="" -q` -> **256 passed**
+(was 236; +16 registry, +4 config-wiring, and the provenance test now asserts
+the resolved root). `data/` is already gitignored (`.gitignore: data/*`, with
+`data/splits/` re-included); `git check-ignore data/raw` confirms it. The three
+present datasets resolve to their real folders; `etis` and `cvc_300` report
+absent.
+
+Left to do for Milestone 8: Step 1 (report + plan), Step 2
+(`scripts/prepare_datasets.py` -> `data/processed/<name>/{data.npz,meta.json}`),
+Step 3 (`src/evaluate.py` multi-dataset), Step 4 (`aggregate_results.py` matrix),
+Step 5 (tests), Step 6 (Colab cells), Step 7 (validation; exp003 Kvasir val
+first), `docs/datasets.md` and the results table.
+
+Open questions (current):
+
+- Commit `d5508ca` ("fusion: add the xattn_swap preset and the exp013 config")
+  is model code outside the Milestone 8 scope. It is a dangling commit in the
+  reflog (HEAD@{8}) only -- it is NOT on `main` or `origin/main` and not
+  reachable from any branch. It touches model code only
+  (`src/models/fusion.py`, `src/utils.py`: adds the `xattn_swap` preset and
+  `configs/exp013_hybrid_swap.yaml`) plus tests/README. It does not touch
+  training code, the Kvasir split, or `src/evaluate.py` /
+  `scripts/aggregate_results.py`, so it has no bearing on Milestone 8. Leave it
+  dangling (or push it separately); do not merge it into this session's work.
+
+## Session 2026-10-31 (twelfth session) - Milestone 8, Step 1 + Step 2
+
+### Step 1: how the existing eval plumbing and the Kvasir prep work (report)
+
+Read, not changed: `src/evaluate.py`, `scripts/aggregate_results.py`,
+`scripts/build_cache.py`, `src/datasets.py`.
+
+- `src/evaluate.py` CLI: `--run_dir --split {test,val} --checkpoint {best,last}`
+  (default `test`/`best`), plus `--results_csv` and `--force`. It reuses
+  `src.train.evaluate` for the val loader and metric loop, writes `eval_<split>.json`
+  and `per_image_<split>.csv` into the run folder, and appends one row to
+  `results/results.csv` keyed on `(run_name, split)`; a duplicate row is refused
+  unless `--force`, and a different header is always refused. `test` is guarded
+  as the only split that may produce a reported number.
+- `scripts/aggregate_results.py` reads only `eval_test.json` + `per_image_test.csv`,
+  groups runs by config (stripping a `_seed\d+` suffix), reports mean/std and
+  `n/a` when only one seed exists, plus a paired bootstrap comparison.
+- Kvasir cache (`scripts/build_cache.py` + `data/cache/kvasir_seg_256.npz`, 143 MB):
+  keys `ids` (U25, 1000), `images` (1000, 256, 256, 3) uint8, `masks`
+  (1000, 256, 256) uint8 {0, 1}. Masks are binarised at >127 *before* a
+  nearest-neighbour resize; images are RGB bilinear. ImageNet mean/std
+  normalisation is **not** in the npz, it is applied in `PolypDataset.__getitem__`
+  at read time. Splits are the committed 800/100/100 files in `data/splits/`.
+- New layout for M8: `<DATA_ROOT>/raw/<folder>` (read-only source) and
+  `<DATA_ROOT>/processed/<name>/{data.npz,meta.json}` (what evaluation reads),
+  with `<DATA_ROOT>` resolved by `src/data_registry.resolve_data_root`. The
+  `processed/<name>/data.npz` format is byte-for-byte the Kvasir cache format,
+  so `PolypDataset` reads it with no new code path.
+
+### Step 2: `scripts/prepare_datasets.py` (done)
+
+- `scripts/prepare_datasets.py` (new): `raw/<folder> -> processed/<name>/{data.npz,meta.json}`
+  for every registered dataset, in exactly the Kvasir cache format. Extensions
+  are discovered from disk (Kvasir `.jpg`/`.jpg`, external `.png`/`.png`), pairs
+  match by stem. Loud failures: missing raw folder, unmatched image/mask stem,
+  ambiguous stem, empty masks, mask values outside {0, 1}. A count that differs
+  from the registry's `expected_count` is a prominent warning recorded in
+  `meta.json` (`count_matches_expected`), never silently "fixed". Idempotent:
+  an existing `data.npz` at the same size is skipped; a different size is
+  refused unless `--force`. `--dataset NAME` must be present (absent -> exit 1),
+  no `--dataset` skips absent datasets with a warning (nothing present -> exit 1),
+  an unknown name is a usage error (exit 2). Also `--config` (read a run's
+  `data.image_size`/`mask_threshold`), `--size`, `--mask-threshold`,
+  `--data-root`, `--out-root`, `--limit`, `--quiet`.
+- `meta.json` per dataset: name, source, raw/processed paths, image count,
+  expected count + match flag, original-resolution summary, image size,
+  resample modes, mask threshold, image/mask extensions, mask suffix, npz bytes,
+  created timestamp.
+- `src/data_registry.py` + `configs/datasets.yaml`: added the `source` field
+  (human-readable name, e.g. `Kvasir-SEG`) that lands in `meta.json`.
+- `tests/test_prepare_datasets.py` (new, 12 tests, CPU, all in `tmp_path`):
+  stem matching across differing extensions, unmatched image reported, missing
+  folder reported, npz+meta written, idempotent + `--force`, different-size
+  refusal, empty mask fails loudly, count mismatch warns but continues, masks
+  binary, `main` skips absent / fails on an explicit absent dataset / usage error
+  on an unknown name.
+
+Run on the real data (local, CPU). `python scripts/prepare_datasets.py`:
+
+| dataset | pairs | expected | npz | notes |
+|---|---|---|---|---|
+| kvasir_seg | 1000 | 1000 | 143.5 MB | 333 distinct resolutions, most common 622x530 |
+| cvc_clinicdb | 612 | 612 | 60.0 MB | all 384x288 |
+| cvc_colondb | 380 | 380 | 45.2 MB | all 574x500 |
+| etis, cvc_300 | absent | - | - | skipped with a warning |
+
+All three npz: `ids` unicode, `images` (N,256,256,3) uint8, `masks` (N,256,256)
+uint8 in {0, 1}, zero empty masks. **Strong check:** `data/processed/kvasir_seg/data.npz`
+is bit-for-bit identical to the committed `data/cache/kvasir_seg_256.npz`
+(ids, images and masks all `np.array_equal`), so the M8 prep reproduces the
+Kvasir pipeline exactly. `data/processed/` lives under the gitignored `data/*`.
+
+Verification: `.venv/bin/python -m pytest -o addopts="" -q` -> **268 passed**
+(was 256; +12 prep tests).
+
+Left to do for Milestone 8: Step 3 (`src/evaluate.py` multi-dataset: per-(run,
+dataset) files/rows, `dataset` column in `results/results.csv`, optional flip
+TTA off by default), Step 4 (`aggregate_results.py` config x dataset matrix),
+Step 5 (missing-dataset skip vs explicit-request failure, evaluate smoke, val
+reproduction within tolerance), Step 6 (`notebooks/colab_eval.ipynb`), Step 7
+(validation; exp003 Kvasir val first, then the full table), `docs/datasets.md`
+and the evaluation-protocol section.
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (thirteenth session) - Milestone 8, Step 3
+
+### Step 3: multi-dataset `src/evaluate.py` (done)
+
+`src/evaluate.py` now evaluates one run on one or more datasets and writes one
+result per `(run_name, split, dataset, tta)`. The single-dataset interface
+(`--run_dir`, `--split`, `--checkpoint`, `--results_csv`, `--force`) is kept; new
+flags are `--dataset NAME` (repeatable, default `kvasir_seg`) and `--tta-flip`
+(off by default).
+
+- Loaders: the training dataset (`data.dataset`, `kvasir_seg`) is read through
+  the committed split files exactly as before, so its `val` Dice reproduces the
+  training log (`build_split_loader`). Every other dataset is read zero-shot
+  from `<DATA_ROOT>/processed/<name>/data.npz` with all of its images
+  (`build_processed_loader`); a missing npz fails loudly and prints the
+  `scripts/prepare_datasets.py --dataset NAME` fix. `resolve_datasets` rejects an
+  unknown name (exit 2). External datasets are always recorded as `split=test`
+  whatever `--split` says.
+- Metrics: Dice and IoU per image at the fixed 0.5-threshold on the sigmoid
+  output, then averaged (unchanged convention). MAE is added (probability map
+  vs. binary ground truth, per image then averaged). Flip TTA is optional: the
+  flipped pass is undone and the two maps are averaged in probability space
+  before thresholding. Small-lesion Dice is still reported.
+- Outputs per dataset, inside the run folder: `eval_<split>_<dataset>.json` and
+  `per_image_<split>_<dataset>.csv` (`id, dice, iou, mae, lesion_pixels,
+  small_lesion`). A TTA run adds `_ttaflip` so it never overwrites a plain run.
+- `results/results.csv` gained the header
+  `run_name,split,dataset,tta,config_file,git_commit,seed,epochs,params_m,
+  best_val_dice,test_dice,test_iou,test_mae,small_lesion_dice,mean_epoch_time_s,
+  peak_gpu_mem_mb`; duplicate key is `(run_name, split, dataset, tta)`.
+- `src/datasets.py`: `PolypDataset` now takes exactly one of `split_file=` or
+  `ids=` so an external dataset with no split file can be read from its cache.
+  Training paths are untouched (`from_config` still passes `split_file=`).
+- `tests/test_evaluate.py`: rewritten for the new file names; 5 new tests (TTA
+  suffix, TTA and plain rows coexisting, zero-shot external dataset via a
+  monkeypatched `DATA_ROOT`, missing-processed-dataset loud failure, unknown
+  dataset usage error).
+
+Verification: focused `tests/test_evaluate.py tests/test_datasets.py` -> **29
+passed**; full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **273
+passed** (was 268; +5 evaluate tests). The checkpoint used for every dataset is
+`best.pt`, i.e. the one selected by Kvasir val Dice; external datasets never
+select or tune it.
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (fourteenth session) - Milestone 8, Step 4
+
+### Step 4: `scripts/aggregate_results.py` config x dataset matrix (done)
+
+Rewritten to read every `eval_<split>_<dataset>[_ttaflip].json` + matching
+`per_image_...csv` written by `src.evaluate` (the old hardcoded
+`eval_test.json`/`per_image_test.csv` names are gone) and to group by config
+(seed suffix stripped) *within* each `(dataset, split, tta)` cell.
+
+- `aggregate_results.md` is now the human matrix: a **Dice** table and an
+  **IoU** table with rows = configs, columns = datasets, cells = `mean +/- std`
+  and `n/a` for a single seed or an unevaluated cell, plus a details table
+  (MAE, small-lesion Dice, params, epoch time) and the optional comparison.
+  Datasets are listed in registry order.
+- `aggregate_results.csv` is the long form (one row per
+  `(config, dataset, split, tta)`): `config, dataset, split, tta, n_seeds,
+  dice_mean, dice_std, iou_mean, iou_std, mae_mean, small_lesion_dice, params_m,
+  mean_epoch_time_s`, so the matrix can be pivoted or joined.
+- `--compare A B` now runs on one dataset: `--dataset` picks it, otherwise the
+  script auto-selects the preferred `(split, tta)` cell that holds both configs.
+  New flags `--dataset`, `--split`, `--tta`.
+- New helpers: `parse_eval_name`, `load_run` (per-folder, list),
+  `dataset_cells`, `group_cell`, `summarize_runs`, `preferred_rows`,
+  `dataset_order`, `resolve_cell`. `bootstrap_ci`/`paired_comparison` kept.
+- `tests/test_aggregate_results.py`: rewritten for the new names; 11 tests
+  (grouping + `n/a`, dataset-column matrix, stem parsing, warning on a missing
+  per-image CSV, registry-ordered columns, auto cell for `--compare`, plus the
+  kept bootstrap/paired tests).
+
+Verification: `tests/test_aggregate_results.py` -> **11 passed**; full suite
+`.venv/bin/python -m pytest -o addopts="" -q` -> **278 passed** (was 273; +5).
+
+Left to do for Milestone 8: Step 5 (missing-dataset skip vs explicit-request
+failure, evaluate smoke, val reproduction within tolerance), Step 6
+(`notebooks/colab_eval.ipynb`), Step 7 (validation; exp003 Kvasir val first,
+then the full table) plus `docs/datasets.md`, the evaluation-protocol section
+and the README pass (the README still shows the old `eval_test.json` names).
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (fifteenth session) - Milestone 8, Step 5
+
+### Step 5: tests for the multi-dataset path (done)
+
+Extended `tests/test_evaluate.py` with two tests that close out Step 5 and tie
+Steps 3 and 4 together on a real (tiny) smoke checkpoint:
+
+- `test_processed_loader_shapes_and_binary_masks`: the zero-shot loader
+  (`build_processed_loader`) over a prepared `processed/<name>/data.npz` yields
+  `(B, 3, H, W)` images and `(B, 1, H, W)` masks whose values are a subset of
+  `{0.0, 1.0}`. Ids are collected across every batch (the smoke config uses
+  `train.batch_size: 2`, so the first batch holds only two of the three images),
+  then checked against the prepared order.
+- `test_multi_dataset_evaluation_feeds_the_aggregate_matrix`: `evaluate_mod.main`
+  on `kvasir_seg` + `cvc_clinicdb` + `cvc_colondb` writes three results rows (all
+  `split=test`) and the matching `eval_test_<dataset>.json` files, and
+  `scripts.aggregate_results.main` over the same runs folder produces the matrix
+  header `| Config | kvasir_seg | cvc_clinicdb | cvc_colondb | n seeds |` with
+  CSV rows covering all three datasets for one config.
+
+The rest of the Step 5 checklist was already covered by earlier work:
+
+- Adapters: shapes, mask values in {0, 1}, stem matching across differing
+  extensions, unmatched-pair and count checks: `tests/test_prepare_datasets.py`
+  (12 tests, Step 2).
+- Missing dataset skipped with a warning, failing only when requested by name:
+  `tests/test_prepare_datasets.py::test_main_skips_absent_datasets_and_prepares_present_ones`
+  and `::test_main_fails_when_an_explicit_dataset_is_absent` for prep;
+  `tests/test_evaluate.py::test_missing_processed_dataset_fails_loudly` (explicit
+  `--dataset` with no npz -> exit 1, message names
+  `scripts/prepare_datasets.py --dataset NAME`) and
+  `::test_unknown_dataset_is_a_usage_error` (exit 2) for evaluation.
+- Evaluate smoke and val reproduction within tolerance:
+  `tests/test_evaluate.py::test_evaluate_metrics_match_the_training_function`
+  compares `src.evaluate` output against `src.train.evaluate` and `SegMetrics`.
+
+Verification: `tests/test_evaluate.py tests/test_aggregate_results.py` -> **25
+passed**; full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **280
+passed** (was 278; +2). CPU-only, no pretrained weights downloaded, no full
+training run.
+
+Left to do for Milestone 8: Step 6 (`notebooks/colab_eval.ipynb`), Step 7
+(validation; exp003 Kvasir val first, then the full table) plus `docs/datasets.md`,
+the evaluation-protocol section and the README pass (the README still shows the
+old `eval_test.json` names).
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (sixteenth session) - Milestone 8, Step 6
+
+### Step 6: `notebooks/colab_eval.ipynb` (done)
+
+New launcher for the multi-dataset flow, separate from `colab_run.ipynb`
+(training). 17 cells, all code cells compile. It is safe to rerun:
+
+- Settings: `DRIVE_DATA_ROOT` (raw + processed on Drive), `LOCAL_DATA_ROOT`
+  (per-session copy on `/content`), `RUNS_DIR` / `RESULTS_CSV` on Drive, `REF`,
+  `PREP_SIZE` (256), `RUN_PREP`, `EVAL_SPLIT` (`test`), `FORCE` (True),
+  `TTA_FLIP` (False), `ONLY_RUNS` (None = every non-smoke run with `best.pt`).
+- Mounts Drive, clones/checks out the repo at `REF`, installs only missing
+  packages, verifies the GPU.
+- Prep: `scripts/prepare_datasets.py --size 256 --data-root <Drive>` builds every
+  dataset present under `<DRIVE_DATA_ROOT>/raw/<folder>` (idempotent; absent
+  datasets skipped with a warning).
+- Copies `<DRIVE_DATA_ROOT>/processed` to `/content/polyp-data/processed` and
+  sets `DATA_ROOT` so evaluation reads locally.
+- Writes a per-run **session config** that changes only data paths: `split_dir`
+  to the committed splits, `cache_path` to the local prepared Kvasir npz. This is
+  needed because a run's `config_resolved.yaml` records the training-session
+  `/content` paths, which are gone in a fresh session.
+- Evaluates each run on `kvasir_seg` first (split `EVAL_SPLIT`) plus every
+  prepared external dataset (recorded as `test`), with `--checkpoint best` and
+  `--results_csv` on Drive; `--force` replaces its own row on a rerun.
+- Aggregates with `scripts/aggregate_results.py --split <EVAL_SPLIT>` and prints
+  `aggregate_results.md`.
+- Last cell documents where checkpoints (`best.pt`, `last.pt`), eval json /
+  per-image csv, `results.csv` and the aggregate files live on Drive.
+
+### Supporting change: `src/evaluate.py --config` (new flag)
+
+`src/evaluate.py` gained `--config PATH` to read a different resolved config
+instead of the run's own `config_resolved.yaml`, for exactly the fresh-session
+case above. It is data-path oriented; the architecture stays the run's own
+because the session config is a copy of it. The payload records the override in
+a new `config_override` field (the results CSV header is unchanged; `config_file`
+still points at the training config). `load_run_config(run_dir, override=...)`
+raises a clear `EvaluateError` when the override file is missing (exit 2).
+
+Tests: `tests/test_evaluate.py::test_config_override_is_read_and_recorded`
+(override is read and recorded; a missing override is a usage error). Focused
+`tests/test_evaluate.py` -> **15 passed**.
+
+Verification: full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **281
+passed** (was 280; +1). Notebook JSON parses and all code cells compile (checked
+with `ast.parse`). Not run on Colab. CPU-only, no pretrained weights downloaded,
+no training run.
+
+Left to do for Milestone 8: Step 7 (local validation; exp003 Kvasir val first,
+then the full table) plus `docs/datasets.md`, the evaluation-protocol section and
+the README pass (the README still shows the old `eval_test.json` names).
+
+Open questions (current): unchanged from the eleventh session (commit `d5508ca`
+is unpushed model code outside M8).
+
+## Session 2026-10-31 (seventeenth session) - Milestone 8, Step 7 (docs)
+
+### `docs/datasets.md` (new)
+
+Reference document for the data side of Milestone 8, six sections: (1) the data
+tree and the `DATA_ROOT` resolution order (env -> `data.data_root` -> `<repo>/data`),
+with the `data/*` gitignore rule and the `data/splits/` exception; (2) the
+registry fields and the five datasets (kvasir_seg / cvc_clinicdb / cvc_colondb
+present, etis / cvc_300 absent-unverified), stem matching; (3) the preparation
+step, the `data.npz` / `meta.json` format, idempotence, the loud-failure list and
+the cache sizes (143.5 / 60.0 / 45.2 MB); (4) zero-shot `src/evaluate.py`
+including the new `--config`; (5) `scripts/aggregate_results.py`; (6) the
+limitations (single-seed provisional, missing datasets, image-level leakage,
+zero-shot external use).
+
+### README pass to the M8 names (done)
+
+- Status header: Milestones 1-6 complete, Milestone 8 complete, Milestone 7
+  partial (was "Milestones 1-5 of 7 complete; Milestone 6 pending").
+- Layout: added `configs/datasets.yaml`, `scripts/prepare_datasets.py`,
+  `scripts/aggregate_results.py`, `src/data_registry.py`, `docs/datasets.md` and
+  `notebooks/colab_eval.ipynb`; `results/results.csv` now says
+  `(run, split, dataset, tta)`.
+- Full ablation step 4 and the results-file table: `eval_test.json` /
+  `per_image_test.csv` -> `eval_<split>_<dataset>[_ttaflip].json` /
+  `per_image_<split>_<dataset>[_ttaflip].csv`; one row per
+  `(run, split, dataset, tta)`; the aggregate row now reads config x dataset.
+- New **Evaluation protocol** section: checkpoint = Kvasir val Dice (`best.pt`),
+  the two dataset kinds (Kvasir via committed splits, external zero-shot from
+  `processed/`), the per-image Dice/IoU/MAE rules, TTA off by default, the output
+  files and the results-row key, the aggregation matrix, and the
+  single-seed-provisional caveat.
+- Roadmap updated to match.
+
+Docs-only change: no code path changed. Verification: full suite
+`.venv/bin/python -m pytest -o addopts="" -q` -> **281 passed** (unchanged;
+proves the docs edits broke nothing).
+
+### Local pipeline validation (done here)
+
+- Full suite `.venv/bin/python -m pytest -o addopts="" -q` -> **281 passed**.
+- Real prepared data is readable through the registry (`resolve_data_root` ->
+  `<repo>/data`): `kvasir_seg` 1000, `cvc_clinicdb` 612, `cvc_colondb` 380, all
+  images `(N, 256, 256, 3)` and masks `(N, 256, 256)` with values `{0, 1}` and
+  counts matching `expected_count`.
+- No real checkpoint exists on the CPU box: the only run folder is
+  `runs/exp001_convnext_base_baseline_smoke`, and its `config_resolved.yaml`
+  predates the `model.msu` -> `decoder.msu` rename, so `load_config` rejects it
+  (`ConfigError: unknown keys in 'model': ['msu', 'msu_mode']`) and
+  `src/evaluate.py` cannot rebuild that model. A real end-to-end evaluate needs
+  a fresh checkpoint from Colab.
+
+Left to do for Milestone 8: Step 7's real-number validation only. It needs the
+Colab checkpoints: first evaluate exp003 on Kvasir val and compare to the ~0.91
+training-log value, stopping to diagnose on a mismatch; then evaluate exp003,
+exp005, exp006 and exp007 on every present dataset and report the full config x
+dataset table, labelled single-seed and provisional.
+`notebooks/colab_eval.ipynb` runs exactly that flow.
+
+## Session 2026-11-01 (thirteenth session) - results-schema fixes (Problems 1-5)
+
+Fixed in `src/evaluate.py`, `scripts/aggregate_results.py`, `src/metrics.py`,
+`src/utils.py`, `scripts/backfill_small_lesion.py` (new), tests, and
+`notebooks/colab_eval.ipynb`. Tests: 283 passed.
+
+- Problem 1 (grouping): aggregation now groups by experiment identity
+  (`run_name` with `_seed<N>`/`_s<N>` stripped via `experiment_key()`), never
+  by `config_file`. New `config_name` column recorded in results rows; legacy
+  rows group on `run_name` alone. Fix verified against the 15-row real
+  `results.csv`: produces 5 separate groups (exp003/005/006/007/008), each
+  n=1, std n/a.
+- Problem 2 (small lesions): "small" is now a fraction of image area
+  (`data.small_lesion_area_fraction`, default 0.02 = 1311 px at 256x256),
+  chosen from ground-truth mask statistics only. Mask-area distribution printed
+  (Kvasir test: <1%=1, <2%=2, <5%=18; ClinicDB: <1%=13, <2%=61; ColonDB:
+  <1%=45, <2%=99). `small_lesion_dice` is NaN/"n/a" when fewer than 10 images
+  qualify (never 0.0); `small_lesion_n` is always recorded. New
+  `scripts/backfill_small_lesion.py` recomputes both columns from existing
+  per-image files (no inference rerun). `per_image_*.csv` gained an
+  `image_area` column.
+- Problem 3 (exp008 MAE ~0.11): read-only diagnosis complete. MAE is computed
+  once on sigmoid probabilities vs binary GT at the correct resolution, so the
+  high MAE with decent Dice is consistent with under-confident/poorly calibrated
+  probabilities on exp008, not an evaluation bug. Exact Colab diagnostic cell
+  prepared (probability inside/background lesion, 0.1-0.9 pixel fraction, MAE
+  on probabilities vs thresholded masks, for exp008 vs exp006). Real checkpoints
+  live only on Colab, so inference cannot be re-run locally.
+- Problem 4 (`epochs` column): new results header uses `best_epoch` (checkpoint
+  epoch+1) and `epochs_trained` (rows in metrics.csv); `epochs` is dropped from
+  new files. Legacy 16-column files are migrated once on first append: backed up
+  to `results.legacy.csv`, rewritten with the new header (old `epochs` ->
+  `best_epoch`, new columns blank), then normal append-only behaviour. Reader
+  and aggregator treat legacy `epochs` as `best_epoch`. Test added covering the
+  migration (backup exists, old values identical, new row carries all columns).
+- Problem 5 (colab_eval.ipynb): aggregate cell now emits `--tta flip` only when
+  TTA is on (was `--tta ""` always); evaluate cell now uses
+  `capture_output=True` and prints stdout/stderr on failure; aggregate prints the
+  run folders picked up. Drive paths remain in the config cell (not hard-coded).
+
+Milestone 8 remains: Step 7's real-number validation needs the Colab
+checkpoints (exp003 on Kvasir val, then the full config x dataset table).
+
+Open questions (current):
+
+
+## Session 2026-11-01 (fourteenth session) - Task A-D and threshold decision
+
+### Task A: ETIS and CVC-300 preparation
+- Inspected data/raw/etis (196 images/masks, .png, 1225x966) and data/raw/cvc_300 (60 images/masks, .png, 574x500). All pairs matched, zero unmatched.
+- Prepared both via scripts/prepare_datasets.py (exit 0). Counts match registry (196/196, 60/60). No empty masks, no bad mask values.
+- Masks binarised at >127 then resized 256x256 nearest-neighbour; images resized bilinear. Tiny polyps do not vanish materially; area-fraction ranking is essentially identical at native and 256px resolution.
+
+### Task B: ground-truth mask-area statistics
+- Computed for all 6 datasets (Kvasir test, Kvasir all, CVC-ClinicDB, CVC-ColonDB, ETIS, CVC-300) at both 256px and native resolution. Resizing changes classification by at most 1-2 images per threshold.
+
+### Task C: threshold decision
+- Set data.small_lesion_area_fraction default to 0.05 (5% of image area = 3277 px at 256x256). Chosen because it is the lowest tested threshold (1%, 2%, 3%, 5%, 10%) at which every dataset including Kvasir test (18 images) has at least 10 qualifying images. Chosen from ground-truth mask statistics only.
+- Updated src/metrics.py (SMALL_LESION_AREA_FRACTION = 0.05), src/utils.py default, docs/datasets.md and docs/results_schema.md with the per-dataset qualifying shares (Kvasir test 18%, ClinicDB 37%, ColonDB 60%, ETIS 72%, CVC-300 88%).
+
+### Task D: backup naming
+- Modified src/evaluate.py _migrate_legacy_results_csv so an existing results.legacy.csv is never overwritten: if the target exists, a timestamped name results.legacy-YYYYMMDD-HHMMSS.csv is used instead. Added test_append_to_legacy_results_csv_timestamped_backup.
+
+### Task E: Colab steps (reported in final reply, not code)
+- ETIS and CVC-300 are picked up through the registry; colab_eval.ipynb's prepared-datasets cell and evaluate cell need no code edits (they already iterate over all present datasets). ONLY_RUNS is unchanged.
+
+Left to do: Milestone 8 Step 7 real-number validation on Colab (exp003 on Kvasir val, then full config x dataset table). Multi-seed (42/43/44) final comparison still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-01 (fifteenth session) - configurable augmentation and pilot configs
+
+### Audit (Step 1)
+- Normalisation: ImageNet mean (0.485, 0.456, 0.406) / std (0.229, 0.224, 0.225) in `PolypDataset.__getitem__`, same train/val/test, configurable via data.mean/std/normalize.
+- Training augmentation (original): HorizontalFlip 0.5, VerticalFlip 0.5, Rotate 20 deg border_mode=0 p 0.5, RandomResizedCrop 0.85-1.0 p 0.5, RandomBrightnessContrast 0.1 p 0.5. Albumentations, seed from run seed.
+- Image size: data.image_size (default 256). Resize after augment: images bilinear, masks nearest. Cache stores 256x256 uint8.
+- Mask binarisation: >127 before resize (disk) or already 0/1 (cache); re-binarised >=0.5 after resize.
+- Resolution change to 352: rebuild cache (build_cache.py --size 352 from raw), re-prep external datasets (prepare_datasets.py --size 352), set data.image_size: 352. evaluate.py reads image_size from config and errors on cache size mismatch.
+
+### Steps 2-4 implemented
+- `build_train_transform` now accepts all parameters with defaults matching original pipeline.
+- `build_train_transform_from_config` reads data.augment block; absent = default; enabled=false = None.
+- train.py uses config-driven transform.
+- PolypDataset raises ValueError when cache image size != requested image_size.
+- Preview script: scripts/preview_augmentation.py.
+- Pilot configs: exp003_p0_current, p1_strong_geom, p2_color_jitter, p3_noise_blur, p4_352px, p5_specular (optional), p6_clahe (optional).
+- Docs: docs/datasets.md sections 8 (augmentation options) and 9 (resolution).
+- Tests: regression (config without augment = identical tensors), disabled returns None, val/test deterministic, mask binary/aligned, cache size mismatch. All pass.
+
+### Step 5: Colab notes
+- No code changes needed for 352px: build_cache.py --size 352 and prepare_datasets.py --size 352 rebuild from raw. evaluate.py reads image_size from config. Keep 256 and 352 in separate folders.
+
+Left to do: run pilots on Colab (P0-P6), compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-01 (sixteenth session) - correction transforms and config verification
+
+### Config diffs (verified)
+- P1 vs P0: adds augment block (rotation 180 p 0.7, RandomResizedCrop 0.6-1.0 p 0.7, flips 0.5, RBC 0.1).
+- P2 vs P1: replaces RBC with ColorJitter (brightness/contrast/saturation 0.25, hue 0.03, p 0.8).
+- P3 vs P2: adds GaussNoise (p 0.2, var 5-20) + GaussianBlur (p 0.2, limit 3).
+- P4 vs P2: image_size 256->352, cache_path 256->352 only.
+- P5 vs P2: specular_inpaint true.
+- P6 vs P2: clahe true.
+- P4, P5, P6 all branch from P2 (not chained from P3). Confirmed.
+
+### Correction transforms (train+test identical)
+- Added build_correction_transform / build_correction_transform_from_config for specular inpainting and CLAHE.
+- Applied in PolypDataset.__getitem__ before augmentation, to both train and eval (correction_transform passed in train.py and evaluate.py).
+- evaluate.py passes correction_transform from run config for both split-file and processed-cache paths.
+- Tests: CLAHE changes image and is deterministic across calls; specular inpaint correction builds successfully.
+
+### P0 reproduction
+- exp003_p0_current has no augment block -> build_train_transform_from_config returns default pipeline (flips 0.5, rotate 20 p 0.5, RRC 0.85-1.0 p 0.5, RBC 0.1 p 0.5), identical to the original build_train_transform. Seed-42 result should match existing exp003 up to GPU nondeterminism.
+
+Left to do: run pilots on Colab, compare, decide final recipe. Milestone 8 Step 7 real-number validation still pending.
+
+Open questions (current): unchanged (d5508ca is a dangling reflog commit of model code outside M8).
+
+## Session 2026-11-04 (this session) - fix: accept data.augment in the config loader
 
 Root cause: `src/utils.py:validate_config` rejects any key not in
 `DEFAULT_CONFIG["data"]`. Pilot configs (exp003_p1..p6) set `data.augment`, so
-every loader (build_cache.py, src.train, src.evaluate — all delegate to
-`src.utils.load_config`) failed with `"Config error: unknown keys in 'data':
-['augment']"` (exit status 2). exp003_p0_current worked only because it has no
-augment block.
+every loader (scripts/build_cache.py, src.train, src.evaluate — all delegate to
+`src.utils.load_config`) failed with
+`"Config error: unknown keys in 'data': ['augment']"` (exit status 2).
 
-Fix:
+Fix (branch `fix/augment-config`, commit on bc2ef3a):
 - `src/utils.py`: added `data.augment: {}` to `DEFAULT_CONFIG["data"]` and a
-  strict `_validate_augment` validator. Known sub-keys (flips, rotation,
-  scale/crop, colour jitter, noise/blur, specular_inpaint, clahe, etc.) are
-  type/range-checked; unknown sub-keys (e.g. "rotaton") and out-of-range values
-  raise a clear `ConfigError`. Configs without an augment block are unchanged
-  (default `{}`).
-- `src/datasets.py`: `PolypDataset` now raises a clear `ValueError` when the
-  npz cache's spatial size differs from `data.image_size` (a 352 config never
-  silently loads a 256 cache).
-- `scripts/build_cache.py`: when `--config` is given and `--out` is not, the
-  output defaults to `data.cache_path` from the config (e.g. `kvasir_seg_352.npz`),
-  so 256 and 352 caches cannot be mixed up; `--size` still overrides
-  `data.image_size`. Removed the deprecated `mode=` argument from
-  `Image.fromarray` (cache output byte-identical).
-- `tests/test_config_pilots.py` (new): loads every pilot config and every
-  tracked config yaml through the real `load_config`; subprocess test runs
-  `build_cache.py --limit 8` on P1 (256) and P4 (352) against synthetic data
-  checking exit 0 and array shape; strict sub-key and value tests; P0
-  regression test.
-- `configs/`: added exp003_p0..p6 pilot configs (from origin/main `bc2ef3a`).
+  strict `_validate_augment` validator. The allowed sub-keys mirror the
+  parameters read by `build_train_transform` / `build_train_transform_from_config`
+  and `build_correction_transform_from_config` (src/datasets.py): enabled,
+  hflip_p, vflip_p, rotation_degrees, rotation_p, random_resized_crop_scale,
+  random_resized_crop_p, brightness_limit, contrast_limit, color_jitter_p,
+  brightness_jitter, contrast_jitter, saturation_jitter, hue_jitter,
+  color_jitter_combined_p, gauss_noise_p, gauss_noise_var_limit,
+  gaussian_blur_p, gaussian_blur_limit, specular_inpaint, specular_threshold,
+  clahe, clahe_clip_limit. Unknown sub-keys (e.g. "rotaton") and out-of-range
+  values raise a clear ConfigError. Configs without an augment block are
+  unchanged (default `{}`).
+- Schema vs code: no code-read key is missing from the schema.
+  `color_jitter_combined_p` is read from the config and passed as a parameter,
+  but `build_train_transform`'s body does not use it (only `color_jitter_p`
+  drives ColorJitter) — a schema key the code functionally ignores.
+- `tests/test_config_pilots.py` (new): loads every tracked experiment config
+  through the real `load_config`; subprocess test runs
+  `scripts/build_cache.py --limit 8` on P1 (shape 256) and P4 (shape 352)
+  against synthetic data; strict sub-key/value tests; P0 regression test
+  (no-augment-block vs `augment: {}` give an identical transform).
+- `notebooks/colab_run.ipynb`: cache cell derives size/file name from CONFIG's
+  `data.image_size`, passes `--size` explicitly, prints the exact command and
+  shows stderr on failure; aggregate cell sets `PYTHONPATH` to the repo root.
+  Drive paths, RUNS_DIR, DRIVE_ZIP, RESULTS_CSV, REPO_DIR, the RESUME guard and
+  the pinned EPOCHS/SEED are unchanged; REF default set to the new commit hash.
 
 Verification:
-- Reproduced exit code 2 for P1-P6 on all three entry points before the fix;
-  exit 0 after.
-- `pytest`: 243 passed, 5 failed — the 5 failures are pre-existing
-  `test_evaluate.py` failures (dual-encoder `build_model` returns None on this
-  branch, unrelated to this change).
-
-### Notebook changes (`notebooks/colab_run.ipynb`)
-- Cache cell (## 4): derives cache size and file name from CONFIG's
-  `data.image_size`, passes `--size` explicitly, defaults `--out` to the
-  config's `cache_path`; prints the exact command and shows stderr on failure
-  (`capture_output`). A 256px config behaves exactly as before.
-- Aggregate cell (## 9): sets `PYTHONPATH` to the repo root so
-  `scripts/aggregate_results.py` can import `src`.
-- Drive paths, `RUNS_DIR`, `DRIVE_ZIP`, `RESULTS_CSV`, `REPO_DIR`, training
-  logic, the `RESUME` guard and pinned `EPOCHS`/`SEED`/`REF` are unchanged.
-
-### Not done / open
-- `prepare_datasets.py --size 352`: this script does not exist on this branch
-  (it belongs to later multi-dataset work); nothing to change here.
-- Pushing: local `main` (HEAD `179aad7`) is behind `origin/main` (`bc2ef3a`)
-  by 14 commits; a plain `git push` will be rejected. The commit below is on
-  local `main`; aligning with `origin/main` requires a pull/rebase which I have
-  not performed to avoid disturbing the pre-existing uncommitted changes.
-- Pre-existing uncommitted changes to `src/evaluate.py`,
-  `src/models/fusion.py`, `tests/test_models.py` and untracked
-  `configs/exp013_hybrid_swap.yaml` were left uncommitted (unrelated to this
-  bug fix).
-- Milestone 7 (final README pass) remains pending.
+- Reproduced exit code 2 for P1-P6 on all three entry points on pristine
+  bc2ef3a; exit 0 after the fix.
+- Full suite: 306 passed, 0 failed (292 on pristine bc2ef3a + 14 new).

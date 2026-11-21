@@ -9,16 +9,17 @@ All three entry points delegate to :func:`src.utils.load_config`, which calls
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
-import numpy as np
-
 from src.utils import ConfigError, load_config
+from src.datasets import build_train_transform_from_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_DIR = REPO_ROOT / "configs"
@@ -34,24 +35,30 @@ PILOT_CONFIGS = [
 ]
 
 
-def _all_config_yamls() -> list[Path]:
-    """Every config YAML that is part of the repository (tracked by git).
+def _tracked_config_yamls() -> list[Path]:
+    """Every tracked experiment config YAML under configs/.
 
-    Untracked work-in-progress files such as ``exp013_hybrid_swap.yaml`` (which
-    references the not-yet-implemented ``xattn_swap`` preset and belongs to
-    unrelated, out-of-scope work) are not part of the repo's config set.
+    Excludes ``configs/datasets.yaml``, which is the dataset registry (a
+    different schema with a top-level ``datasets`` key) and is not an experiment
+    config loadable by :func:`load_config`.
     """
-    tracked: list[str] = []
     result = subprocess.run(
         ["git", "ls-files", str(CONFIGS_DIR)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
+    tracked: list[str] = []
     if result.returncode == 0:
-        tracked = [line for line in result.stdout.splitlines() if line.endswith((".yaml", ".yml"))]
+        tracked = [
+            line
+            for line in result.stdout.splitlines()
+            if line.endswith((".yaml", ".yml")) and Path(line).name != "datasets.yaml"
+        ]
     if not tracked:
-        tracked = sorted(str(p) for p in CONFIGS_DIR.glob("*.yaml"))
+        tracked = [
+            str(p) for p in CONFIGS_DIR.glob("*.yaml") if p.name != "datasets.yaml"
+        ]
     return [Path(p) for p in sorted(tracked)]
 
 
@@ -60,19 +67,18 @@ def test_pilot_config_loads_through_real_loader(name: str) -> None:
     """Each pilot config must be accepted by the shared ``load_config``."""
     cfg = load_config(CONFIGS_DIR / name)
     assert cfg["data"]["image_size"] in (256, 352)
-    # P0 has no augment block; every other pilot has one.
     if name == "exp003_p0_current.yaml":
         assert cfg["data"]["augment"] == {}
     else:
         assert cfg["data"]["augment"]["enabled"] is True
 
 
-def test_every_config_yaml_loads_through_the_real_loader() -> None:
-    """Load every yaml under configs/ through load_config (the loader shared
-    by build_cache.py, src.train and src.evaluate). Any failure here means a
+def test_every_tracked_config_yaml_loads_through_the_real_loader() -> None:
+    """Load every tracked yaml under configs/ through load_config (the loader
+    shared by build_cache.py, src.train and src.evaluate). Any failure means a
     config entry point is broken."""
-    for path in _all_config_yamls():
-        load_config(path)  # must not raise
+    for path in _tracked_config_yamls():
+        load_config(path)
 
 
 def test_unknown_augment_subkey_is_rejected(tmp_path: Path) -> None:
@@ -122,6 +128,29 @@ def test_p0_unchanged_without_augment_block() -> None:
     assert cfg["data"]["cache_path"] == "data/cache/kvasir_seg_256.npz"
 
 
+def test_p0_and_empty_augment_give_identical_transform() -> None:
+    """A config with no augment block and one with ``augment: {}`` must yield an
+    identical training transform (regression: exp003_p0_current gives the same
+    tensors as before the fix)."""
+    import albumentations as A  # noqa: F401  (ensures the builder import path works)
+
+    cfg0 = load_config(CONFIGS_DIR / "exp003_p0_current.yaml")
+    cfg1 = copy.deepcopy(cfg0)
+    cfg1["data"]["augment"] = {}
+
+    t0 = build_train_transform_from_config(cfg0, 64, seed=7)
+    t1 = build_train_transform_from_config(cfg1, 64, seed=7)
+
+    img = np.random.randint(0, 255, size=(64, 64, 3), dtype=np.uint8)
+    mask = (np.random.rand(64, 64) > 0.5).astype(np.uint8) * 255
+
+    out0 = t0(image=img, mask=mask)
+    out1 = t1(image=img, mask=mask)
+
+    assert np.array_equal(out0["image"], out1["image"])
+    assert np.array_equal(out0["mask"], out1["mask"])
+
+
 @pytest.mark.parametrize("name,size", [
     ("exp003_p1_strong_geom.yaml", 256),
     ("exp003_p4_352px.yaml", 352),
@@ -144,11 +173,13 @@ def test_build_cache_subprocess_builds_pilot_cache(tmp_path: Path, name: str, si
 
     out = tmp_path / f"cache_{name}.npz"
     result = subprocess.run(
-        [sys.executable, "scripts/build_cache.py",
-         "--config", str(CONFIGS_DIR / name),
-         "--root", str(root),
-         "--limit", "8",
-         "--out", str(out)],
+        [
+            sys.executable, "scripts/build_cache.py",
+            "--config", str(CONFIGS_DIR / name),
+            "--root", str(root),
+            "--limit", "8",
+            "--out", str(out),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

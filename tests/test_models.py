@@ -174,6 +174,37 @@ def test_caformer_net_forward_shape_at_256() -> None:
     assert torch.isfinite(logits).all()
 
 
+def test_xattn_swap_forward_shape() -> None:
+    """Test xattn_swap fusion mode with dual encoder."""
+    from src.models.metapolyp_enc import MetaPolypEncoder
+    model = build_model(
+        {
+            "model": {
+                "encoder": "dual",
+                "encoder_a": "convnext_tiny.fb_in1k",
+                "encoder_b": "caformer_s18.sail_in1k",
+                "pretrained_a": False,
+                "pretrained_b": False,
+                "fusion": "xattn_swap",
+                "channels": [64, 128, 320, 512],
+                "fusion_heads": 8,
+                "skip_convformer": False,
+                "pos_enc_2d": False,
+            },
+            "decoder": {
+                "msu": False,
+                "msu_mode": "paper",
+            },
+        }
+    ).eval()
+
+    with torch.no_grad():
+        logits = model(torch.randn(2, 3, 256, 256))
+
+    assert logits.shape == (2, 1, 256, 256)
+    assert torch.isfinite(logits).all()
+
+
 def test_net_returns_logits_not_probabilities() -> None:
     model = build_model(baseline_config()).eval()
     # A zero-weight head with a +10 bias must emit exactly 10.0: if a sigmoid were

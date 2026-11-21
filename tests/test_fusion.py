@@ -73,11 +73,13 @@ def test_resolve_fusion_presets_and_lists() -> None:
     assert resolve_fusion_modes("single_a") == ["single_a"] * 4
     assert resolve_fusion_modes("single_b") == ["single_b"] * 4
     assert resolve_fusion_modes("xattn") == ["xattn"] * 4
+    assert resolve_fusion_modes("xattn_swap") == ["concat", "concat", "xattn_swap", "xattn_swap"]
     explicit = ["concat", "concat", "xattn", "xattn"]
     assert resolve_fusion_modes(explicit) == explicit
 
     assert fusion_branch(resolve_fusion_modes("hybrid")) == "dual"
     assert fusion_branch(resolve_fusion_modes("all_concat")) == "dual"
+    assert fusion_branch(resolve_fusion_modes("xattn_swap")) == "dual"
     assert fusion_branch(resolve_fusion_modes("single_a")) == "single_a"
     assert fusion_branch(resolve_fusion_modes("single_b")) == "single_b"
 
