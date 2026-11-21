@@ -1,4 +1,4 @@
-# EXP006: Dual-Encoder Polyp Segmentation with All-Concat Fusion
+# Dual-Encoder Polyp Segmentation with All-Concat Fusion
 
 <p align="center">
   <img src="assets/banner.png"
