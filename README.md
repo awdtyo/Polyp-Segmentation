@@ -1140,6 +1140,6 @@ for f in docs/architecture/*.mmd; do
 done
 ```
 
----
 
-*Last updated: 2026-11-21 | Commit: `c7c6f5d` | EXP006: `exp006_all_concat`*
+
+
